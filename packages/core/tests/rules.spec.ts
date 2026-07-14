@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMatchContextFromSnapshots } from "../src/normalizer/live-data-normalizer.ts";
-import { runExpertRules } from "../src/rules/index.ts";
+import { runExpertRules, runVisualReviewRules } from "../src/rules/index.ts";
 
 function ctx() {
   return createMatchContextFromSnapshots({
@@ -35,5 +35,37 @@ describe("expert rules", () => {
   it("detects early deaths", () => {
     const insights = runExpertRules(ctx());
     expect(insights.some((insight) => insight.ruleSource === "detectEarlyDeaths")).toBe(true);
+  });
+
+  it("does not turn timestamp bookmarks or pixel scans into coaching insights", () => {
+    const match = {
+      ...ctx(),
+      visualObservations: [
+        {
+          id: "bookmark",
+          sessionId: "s1",
+          timestampSec: 232,
+          category: "death_context" as const,
+          confidence: 0.82,
+          title: "Fight before death VOD frame",
+          details: "Frame extracted before a player-involved fight.",
+          evidence: ["Frame: death.jpg"],
+          evidenceKind: "bookmark" as const
+        },
+        {
+          id: "scan",
+          sessionId: "s1",
+          timestampSec: 232,
+          category: "positioning" as const,
+          confidence: 0.7,
+          title: "Local positioning scan",
+          details: "Local pixel scan found high activity. Treat this as a replay bookmark, not object detection.",
+          evidence: ["Gameplay activity: 0.8"],
+          evidenceKind: "pixel-scan" as const
+        }
+      ]
+    };
+
+    expect(runVisualReviewRules(match)).toEqual([]);
   });
 });

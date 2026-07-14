@@ -132,7 +132,8 @@ function input() {
           confidence: 0.66,
           title: "Visual bookmark near death",
           details: "Screenshot near death.",
-          evidence: ["Frame: death.png"]
+          evidence: ["Frame: death.png"],
+          evidenceKind: "verified"
         }
       ]
     },
@@ -194,6 +195,28 @@ describe("coach prompt telemetry", () => {
     expect(packet.instruction.qualityBar.join("\n")).toContain("concrete next-game behavior");
     expect(packet.instruction.forbiddenPatterns).toContain("benchmark-only diagnosis");
     expect(packet.telemetry.evidence.some((entry: string) => entry.startsWith("Role evidence:"))).toBe(true);
+  });
+
+  it("does not expose bookmark-only frames as semantic visual evidence", () => {
+    const bookmarkOnlyInput = input();
+    bookmarkOnlyInput.match.visualObservations = [{
+      id: "bookmark-1",
+      sessionId: "session-1",
+      timestampSec: 390,
+      category: "death_context",
+      confidence: 0.82,
+      title: "Fight before death VOD frame",
+      details: "Frame extracted before a death.",
+      evidence: ["VOD frame: C:\\Users\\player\\death.jpg"],
+      evidenceKind: "bookmark"
+    }];
+
+    const packet = buildCoachPacket(bookmarkOnlyInput) as any;
+    const messages = buildPostGameCoachMessages(bookmarkOnlyInput);
+
+    expect(packet.telemetry.visualBookmarks).toEqual([]);
+    expect(JSON.stringify(packet)).not.toContain("C:\\\\Users");
+    expect(messages[0]!.content).toContain("Timestamp bookmarks and local pixel scans are navigation aids, not image understanding");
   });
 
   it("treats offline ROFL final metadata as scoreboard data without fabricating a timeline", () => {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.4
+
+- Separated timestamp bookmarks, coarse pixel scans, parsed telemetry, and verified visual observations so only verified image evidence can influence coaching.
+- Fixed Riot kill-event identity matching when the event omits the `#tag`, restoring early-death detection for affected Live Client sessions.
+- Replaced unsupported AI-written timeline causality with exact death, 10-minute, 15-minute, and final telemetry notes.
+- Removed local replay paths from report evidence and replaced speculative build/positioning praise with scoreboard-supported strengths.
+- Existing affected reviews and Journal entries repair automatically when loaded; bookmark-only VOD reviews now state that gameplay was not visually graded instead of fabricating a decision review.
+- Added regressions for bookmark-driven report deterioration, Riot ID event matching, prompt evidence filtering, and visual-rule filtering.
+
 ## 0.4.3
 
 - Added keyless automatic Rank/LP synchronization through the running League Client's authenticated localhost API.

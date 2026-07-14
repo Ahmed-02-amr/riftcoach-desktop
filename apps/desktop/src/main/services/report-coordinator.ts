@@ -169,9 +169,12 @@ export class ReportCoordinator {
             ...context,
             visualObservations: this.options.visualReviewService.listObservations(session.id)
           };
-          report = enforceEvidenceBackedCoachReport(storedReport, {
+          const casualMode = isCasualReviewMode(match.game);
+          const visualOnlyMode = isVisualOnlyReview(match);
+          const insights = casualMode ? [] : visualOnlyMode ? runVisualReviewRules(match) : runExpertRules(match);
+          const repairInput: CoachReportInput = {
             match,
-            insights: [],
+            insights,
             profile: { rank: this.rankProfileForSession(session.id, settings).rank, mainRole: settings.mainRole },
             settings: {
               aiMode: settings.aiMode,
@@ -180,7 +183,8 @@ export class ReportCoordinator {
               knowledgeMode: settings.knowledgeMode
             },
             knowledge: storedReport.knowledgeContext
-          });
+          };
+          report = enforceEvidenceBackedCoachReport(enforceActionableCoachReport(storedReport, repairInput), repairInput);
           if (JSON.stringify(report) !== JSON.stringify(storedReport)) this.reports.save(report);
         } catch (error) {
           log.warn(`journal repair skipped for session ${session.id}`, error);
@@ -322,7 +326,8 @@ export class ReportCoordinator {
           (matchV5.timeline
             ? "Riot Match-v5 added minute frames and event timing."
             : "This report does not depend on the League replay client or Replay API."),
-        evidence: reviewData.evidence
+        evidence: reviewData.evidence,
+        evidenceKind: "telemetry"
       });
 
       let frameCount = 0;

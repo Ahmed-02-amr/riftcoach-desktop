@@ -1,6 +1,6 @@
 {
   "name": "@riftcoach/core",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.ts",

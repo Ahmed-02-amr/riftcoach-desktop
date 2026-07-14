@@ -54,6 +54,10 @@ pnpm build
 pnpm --filter @riftcoach/desktop dev
 ```
 
+## v0.4.4 Evidence-grounded reviews
+
+RiftCoach now distinguishes replay navigation bookmarks and coarse pixel statistics from verified visual understanding. Bookmark-only frames cannot be promoted into claims about wave state, positioning, camera focus, or why a fight happened. Riot kill events that omit the player's `#tag` are matched correctly, timelines use exact telemetry rather than inferred causality, local file paths are removed from evidence, and existing affected reviews are repaired when they load.
+
 ## v0.4.2 Journal evidence quality
 
 ROFL final-scoreboard metadata is no longer mislabeled as visual-only data. RiftCoach now prevents parser/import status from becoming coaching praise, limits final-stat-only conclusions to supported KDA/CS/vision/role signals, and explicitly refuses to invent unavailable wave state, pathing, reset, positioning, or event timing. Existing affected Journal entries are repaired when the Journal loads.
@@ -74,7 +78,7 @@ Build the versioned Windows installer with:
 pnpm --filter @riftcoach/desktop dist:win
 ```
 
-The output uses the current package version, for example `apps/desktop/release/RiftCoach-0.4.3-Setup.exe`.
+The output uses the current package version, for example `apps/desktop/release/RiftCoach-0.4.4-Setup.exe`.
 
 If `pnpm` is not available, install it without Corepack admin shims:
 

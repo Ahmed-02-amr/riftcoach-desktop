@@ -457,9 +457,20 @@ export class VisualRepository {
 
   saveObservation(obs: VisualObservation): void {
     this.db.prepare(`
-      INSERT INTO visual_observations(id, session_id, frame_id, timestamp_sec, category, confidence, title, details, evidence_json)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(obs.id, obs.sessionId, obs.frameId ?? null, obs.timestampSec, obs.category, obs.confidence, obs.title, obs.details, json(obs.evidence));
+      INSERT INTO visual_observations(id, session_id, frame_id, timestamp_sec, category, confidence, title, details, evidence_json, evidence_kind)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      obs.id,
+      obs.sessionId,
+      obs.frameId ?? null,
+      obs.timestampSec,
+      obs.category,
+      obs.confidence,
+      obs.title,
+      obs.details,
+      json(obs.evidence),
+      obs.evidenceKind ?? "verified"
+    );
   }
 
   listObservations(sessionId: string): VisualObservation[] {
@@ -473,7 +484,8 @@ export class VisualRepository {
       confidence: row.confidence,
       title: row.title,
       details: row.details,
-      evidence: parse<string[]>(row.evidence_json)
+      evidence: parse<string[]>(row.evidence_json),
+      evidenceKind: row.evidence_kind ?? undefined
     }));
   }
 

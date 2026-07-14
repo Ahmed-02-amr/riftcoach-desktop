@@ -1,4 +1,4 @@
-import type { MatchContext } from "@riftcoach/core";
+import { isVerifiedVisualObservation, type MatchContext } from "@riftcoach/core";
 
 export function hasScoreboardTelemetry(match: MatchContext): boolean {
   const latest = [...match.snapshots].sort((a, b) => a.timestampSec - b.timestampSec).at(-1);
@@ -17,9 +17,7 @@ export function isVisualOnlyMatch(match: MatchContext): boolean {
 
 export function isFinalStatsOnlyRoflMatch(match: MatchContext): boolean {
   if (!isRoflWithoutTimeline(match)) return false;
-  const hasUsefulVisuals = (match.visualObservations ?? []).some((observation) =>
-    observation.category !== "unknown" && !/telemetry parsed|metadata parsed|imported/i.test(observation.title)
-  );
+  const hasUsefulVisuals = (match.visualObservations ?? []).some(isVerifiedVisualObservation);
   return !hasUsefulVisuals;
 }
 

@@ -73,7 +73,8 @@ export class VisualReviewService {
         title: frame.source === "vod-frame" ? "VOD bookmark near death" : "Visual bookmark near death",
         details:
           "A visual frame was captured close to one of your deaths. Use it during review to inspect positioning, wave state, and nearby teammates before the death.",
-        evidence: [`Frame: ${frame.filePath}`]
+        evidence: [`Frame: ${frame.filePath}`],
+        evidenceKind: "bookmark"
       };
       this.repo.saveObservation(obs);
       observations.push(obs);
@@ -133,7 +134,8 @@ export class VisualReviewService {
           confidence: item.confidence,
           title: item.title,
           details: item.details,
-          evidence: [`VOD frame: ${outputPath}`, `Game time: ${formatTime(item.timestampSec)}`, `Video time: ${formatTime(item.videoTimestampSec)}`]
+          evidence: [`VOD frame: ${outputPath}`, `Game time: ${formatTime(item.timestampSec)}`, `Video time: ${formatTime(item.videoTimestampSec)}`],
+          evidenceKind: "bookmark"
         };
         this.repo.saveFrame(frame);
         this.repo.saveObservation(obs);
@@ -192,6 +194,7 @@ export class VisualReviewService {
     evidence: string[];
     category?: VisualObservation["category"];
     confidence?: number;
+    evidenceKind?: VisualObservation["evidenceKind"];
   }): VisualObservation {
     const observation: VisualObservation = {
       id: nanoid(12),
@@ -201,7 +204,8 @@ export class VisualReviewService {
       confidence: input.confidence ?? 0.9,
       title: input.title,
       details: input.details,
-      evidence: input.evidence
+      evidence: input.evidence,
+      evidenceKind: input.evidenceKind ?? "verified"
     };
     this.repo.saveObservation(observation);
     return observation;
@@ -227,7 +231,8 @@ export class VisualReviewService {
       details:
         input?.details ??
         "Frame captured from the League replay client after seeking the ROFL replay. Use it to inspect visible map state, camera focus, and spacing.",
-      evidence: input?.evidence ?? [`Replay frame: ${frame.filePath}`, `Replay time: ${formatTime(frame.timestampSec)}`]
+      evidence: input?.evidence ?? [`Replay frame: ${frame.filePath}`, `Replay time: ${formatTime(frame.timestampSec)}`],
+      evidenceKind: "bookmark"
     };
     this.repo.saveObservation(obs);
 
@@ -327,7 +332,8 @@ export class VisualReviewService {
           `Gameplay activity: ${score(gameplay.activity)}`,
           `Minimap activity: ${score(minimap.activity)}`,
           `HUD brightness: ${score(hud.brightness)}`
-        ]
+        ],
+        evidenceKind: "pixel-scan"
       }
     ];
 
@@ -346,7 +352,8 @@ export class VisualReviewService {
           `Frame: ${frame.filePath}`,
           `Minimap brightness: ${score(minimap.brightness)}`,
           `Minimap contrast: ${score(minimap.contrast)}`
-        ]
+        ],
+        evidenceKind: "pixel-scan"
       });
     }
 

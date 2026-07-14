@@ -1,10 +1,11 @@
 import type { CoachInsight } from "../types/coach";
 import type { MatchContext } from "../types/game";
+import { isVerifiedVisualObservation } from "../types/visual";
 import { formatTime } from "../utils/time";
 import { insight } from "./helpers";
 
 export function insightsFromVisualObservations(ctx: MatchContext): CoachInsight[] {
-  const observations = ctx.visualObservations ?? [];
+  const observations = (ctx.visualObservations ?? []).filter(isVerifiedVisualObservation);
   const highConfidence = observations.filter((obs) => obs.confidence >= 0.65);
   if (highConfidence.length === 0) return [];
 

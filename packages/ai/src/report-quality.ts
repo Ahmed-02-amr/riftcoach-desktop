@@ -1,5 +1,5 @@
 import type { CoachInsight, CoachReport, CoachReportInput, InsightCategory } from "@riftcoach/core";
-import { formatChampionName, formatTime, isCasualReviewMode } from "@riftcoach/core";
+import { formatChampionName, formatTime, isCasualReviewMode, isVerifiedVisualObservation } from "@riftcoach/core";
 import { isFinalStatsOnlyRoflMatch, isVisualOnlyMatch } from "./evidence-mode";
 
 const DECISION_CATEGORIES = new Set<InsightCategory>([
@@ -33,7 +33,7 @@ export function enforceActionableCoachReport(report: CoachReport, input: CoachRe
   const focus = chooseActionFocus(input);
   if (!focus) return report;
 
-  const needsMainRepair = isBenchmarkOnlyReview(report) || !hasConcreteMainMistake(report);
+  const needsMainRepair = isBenchmarkOnlyReview(report) || reliesOnUnverifiedVisualEvidence(report, input) || !hasConcreteMainMistake(report);
   const needsDrillRepair = !hasActionableDrill(report);
 
   if (!needsMainRepair && !needsDrillRepair) return report;
@@ -48,7 +48,6 @@ export function enforceActionableCoachReport(report: CoachReport, input: CoachRe
   };
 }
 
-const SYSTEM_HABIT_PATTERN = /\b(parse[dr]?|metadata|telemetry|import(?:ed)?|role identification|capture[dr]?|system reliability)\b/i;
 const FINAL_STATS_WARNING =
   "Offline ROFL review used final-scoreboard metadata only. Without Match-v5 timeline data or replay frames, RiftCoach cannot verify when or why each outcome happened.";
 
@@ -68,8 +67,69 @@ const ROLE_BASELINES: Record<string, { csPerMin: number; visionPerMin: number; k
 export function enforceEvidenceBackedCoachReport(report: CoachReport, input: CoachReportInput): CoachReport {
   if (report.reviewType === "casual_mode" || isCasualReviewMode(input.match.game)) return report;
   if (isFinalStatsOnlyRoflMatch(input.match)) return buildFinalStatsOnlyRoflReport(report, input);
-  if (!SYSTEM_HABIT_PATTERN.test(`${report.positiveHabit.title}\n${report.positiveHabit.explanation}`)) return report;
-  return { ...report, positiveHabit: deriveFinalStatsStrength(input) };
+  if (isVisualOnlyReview(input) && !hasVerifiedVisualEvidence(input)) return buildBookmarkOnlyReport(report, input);
+  if (input.insights.length === 0 && reliesOnUnverifiedVisualEvidence(report, input)) return buildTelemetryFallbackReport(report, input);
+
+  const repaired = enforceActionableCoachReport(report, input);
+  const sanitizedEvidence = sanitizeEvidence(repaired.mainMistake.evidence);
+  return {
+    ...repaired,
+    mainMistake: {
+      ...repaired.mainMistake,
+      evidence: sanitizedEvidence.length > 0 ? sanitizedEvidence : collectTelemetryEvidence(input).slice(0, 4)
+    },
+    positiveHabit: deriveFinalStatsStrength(input),
+    timelineNotes: buildGroundedTimelineNotes(input)
+  };
+}
+
+function buildTelemetryFallbackReport(report: CoachReport, input: CoachReportInput): CoachReport {
+  const champion = formatChampionName(input.match.player.championName);
+  const positiveHabit = deriveFinalStatsStrength(input);
+  const fallback = deriveFinalStatsFocus(input);
+  return {
+    ...report,
+    summary:
+      `${champion}: no timestamped decision error cleared the evidence threshold after unverified replay bookmarks were removed. ` +
+      `${positiveHabit.title} is the clearest supported strength; ${fallback.mainMistake.title.toLowerCase()} is the next measurable scoreboard-level focus.`,
+    mainMistake: fallback.mainMistake,
+    positiveHabit,
+    timelineNotes: buildGroundedTimelineNotes(input),
+    nextGameDrill: fallback.nextGameDrill
+  };
+}
+
+function buildBookmarkOnlyReport(report: CoachReport, input: CoachReportInput): CoachReport {
+  const bookmarkCount = input.match.visualObservations?.length ?? 0;
+  const warnings = report.warnings.filter((warning) => !/visual bookmarks are the primary evidence|visual-only/i.test(warning));
+  const limitation =
+    "RiftCoach captured timestamp bookmarks, but no verified semantic image observation or scoreboard timeline was available. A frame timestamp alone cannot establish positioning, wave state, camera focus, target selection, or the cause of a play.";
+  return {
+    ...report,
+    summary: `${bookmarkCount} replay bookmark${bookmarkCount === 1 ? " is" : "s are"} ready for manual inspection. RiftCoach did not grade a gameplay decision because the captured frames were not semantically analyzed.`,
+    mainMistake: {
+      title: "No verified visual decision to grade",
+      explanation: limitation,
+      evidence: [`Replay bookmarks captured: ${bookmarkCount}.`, "Verified semantic visual observations: 0."],
+      whyItMatters: "Guessing from a timestamp would turn a useful replay marker into fabricated coaching. Open the bookmarks to inspect the play, or use a visual-capable analysis path before assigning a mistake."
+    },
+    positiveHabit: {
+      title: "Gameplay strength not scored",
+      explanation: "The available bookmark records do not contain enough verified gameplay information to name a strength honestly."
+    },
+    timelineNotes: [],
+    nextGameDrill: {
+      title: "Add one verified decision note",
+      steps: [
+        "Open the most relevant bookmark and identify the visible game state before the decision.",
+        "Record only what the frame or replay directly shows, such as champion positions, wave location, or available vision.",
+        "Generate coaching only after that visual note is available as verified evidence."
+      ],
+      successMetric: "Add one verified visual observation before grading the replay.",
+      duration: "next_game"
+    },
+    warnings: warnings.includes(limitation) ? warnings : [...warnings, limitation]
+  };
 }
 
 function buildFinalStatsOnlyRoflReport(report: CoachReport, input: CoachReportInput): CoachReport {
@@ -116,7 +176,7 @@ function deriveFinalStatsStrength(input: CoachReportInput): CoachReport["positiv
       title: `Maintained ${role === "unknown" ? "resource" : role} farm pace`,
       explanation:
         `${champion} finished with ${cs} CS in ${formatTime(match.aggregate.durationSec)}, or ${match.aggregate.csPerMin.toFixed(1)} CS per minute. ` +
-        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} median, making resource collection the clearest positive signal available from the final scoreboard.`
+        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} baseline, making resource collection the clearest positive signal available from the scoreboard.`
     };
   }
   if (visionPerMin !== undefined && visionPerMin >= baseline.visionPerMin) {
@@ -124,7 +184,7 @@ function deriveFinalStatsStrength(input: CoachReportInput): CoachReport["positiv
       title: "Contributed useful vision",
       explanation:
         `${champion} recorded ${vision} vision score in ${formatTime(match.aggregate.durationSec)} (${visionPerMin.toFixed(2)} per minute). ` +
-        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} median and is the strongest supported positive from the final stats.`
+        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} baseline and is the strongest supported positive from the scoreboard.`
     };
   }
   if (match.aggregate.deaths <= 2) {
@@ -257,6 +317,25 @@ function isVisualOnlyReview(input: CoachReportInput): boolean {
   return isVisualOnlyMatch(input.match);
 }
 
+function hasVerifiedVisualEvidence(input: CoachReportInput): boolean {
+  return (input.match.visualObservations ?? []).some(isVerifiedVisualObservation);
+}
+
+function reliesOnUnverifiedVisualEvidence(report: CoachReport, input: CoachReportInput): boolean {
+  if (hasVerifiedVisualEvidence(input)) return false;
+  const text = [
+    report.summary,
+    report.mainMistake.title,
+    report.mainMistake.explanation,
+    report.mainMistake.whyItMatters,
+    ...report.mainMistake.evidence,
+    ...report.timelineNotes.flatMap((note) => [note.title, note.note]),
+    report.nextGameDrill.title,
+    ...report.nextGameDrill.steps
+  ].join("\n");
+  return /\b(?:bookmark|screenshot|visual frame|vod frame|replay frame|frame extracted|camera focus)\b/i.test(text);
+}
+
 function isBenchmarkOnlyReview(report: CoachReport): boolean {
   const text = [
     report.summary,
@@ -298,17 +377,17 @@ function actionPlanForInsight(insight: CoachInsight, input: CoachReportInput): A
   switch (insight.category) {
     case "laning":
       return {
-        title: "Stop taking the first doomed lane fight",
+        title: "Protect the first 10 minutes",
         summary:
-          "Your next-game focus is lane restraint before 10:00. Take trades only when the wave, jungle information, and escape route are good enough; otherwise give the contested minion and keep the lane playable.",
-        correction: "Before trading in lane, check wave size, enemy jungle threat, and your escape cooldown. If two are bad or unknown, give the CS and keep the wave playable.",
-        consequence: "One bad early trade turns into lost wave control, worse recall timing, and a lane where every next CS costs health.",
+          "Your next-game focus is protecting the first 10 minutes. The telemetry proves an early death occurred, but it does not prove the wave state or decision that caused it; use a short pre-commit check instead of guessing from the result.",
+        correction: "Telemetry records the death timing, not its cause. Before an early trade or all-in, check minion numbers, the opponent's key cooldown, enemy jungle visibility, and your exit; disengage when two checks are bad or unknown.",
+        consequence: "Preventing the first early death preserves lane time and keeps later wave and recall choices available without pretending telemetry can explain the original play.",
         steps: [
           "Before each trade before 10:00, check: is my wave bigger, do I know enemy jungle, and do I have Flash or a clean exit?",
           "If two checks fail, drop the contested minion and hold the wave closer to your tower.",
           "Only trade after the enemy uses a key cooldown or after your wave is large enough to punish them back."
         ],
-        successMetric: "Finish the next game with zero avoidable deaths before 10:00 while staying within one wave of your lane opponent.",
+        successMetric: "Finish the next game with zero deaths before 10:00.",
         duration: "next_3_games"
       };
     case "positioning":
@@ -511,12 +590,96 @@ function collectTelemetryEvidence(input: CoachReportInput): string[] {
     out.push(`Death timestamps: ${input.match.aggregate.deathTimestamps.map(formatTime).join(", ")}.`);
   }
   const combat = input.match.events
-    .filter((event) => event.type === "champion_kill")
+    .filter((event) => event.type === "champion_kill" && eventInvolvesPlayer(event, input))
     .slice(0, 4)
     .map((event) => `${formatTime(event.timestampSec)} ${event.actorName ?? "unknown"} killed ${event.victimName ?? "unknown"}`)
     .join("; ");
   if (combat) out.push(`Combat timeline: ${combat}.`);
   return out;
+}
+
+function eventInvolvesPlayer(event: CoachReportInput["match"]["events"][number], input: CoachReportInput): boolean {
+  const playerNames = nameVariants(input.match.player.riotId).concat(nameVariants(input.match.player.summonerName));
+  const matches = (name: string | undefined): boolean => nameVariants(name).some((variant) => playerNames.includes(variant));
+  return matches(event.actorName) || matches(event.victimName) || Boolean(event.assistingParticipantNames?.some(matches));
+}
+
+function nameVariants(value: string | undefined): string[] {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return [];
+  return Array.from(new Set([normalized, normalized.split("#")[0]!].filter(Boolean)));
+}
+
+function sanitizeEvidence(evidence: string[]): string[] {
+  const sanitized = evidence
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => !/\b[A-Za-z]:\\|\/(?:Users|home|tmp)\//i.test(entry))
+    .filter((entry) => !/^(?:vod frame|replay frame|frame|rofl file):/i.test(entry));
+  return Array.from(new Set(sanitized)).slice(0, 5);
+}
+
+function buildGroundedTimelineNotes(input: CoachReportInput): CoachReport["timelineNotes"] {
+  if (isVisualOnlyReview(input)) return [];
+
+  const notes: CoachReport["timelineNotes"] = [];
+  const used = new Set<number>();
+  const add = (note: CoachReport["timelineNotes"][number]): void => {
+    const key = Math.round(note.timestampSec);
+    if (used.has(key)) return;
+    used.add(key);
+    notes.push(note);
+  };
+
+  for (const timestampSec of input.match.aggregate.deathTimestamps.slice(0, 2)) {
+    add({
+      timestampSec,
+      title: `Death recorded at ${formatTime(timestampSec)}`,
+      note: `Match telemetry records a player death at ${formatTime(timestampSec)}. It does not establish the wave state, positioning error, or decision that caused it.`
+    });
+  }
+
+  const snapshots = [...input.match.snapshots].sort((a, b) => a.timestampSec - b.timestampSec);
+  for (const checkpointSec of [10 * 60, 15 * 60]) {
+    const snapshot = nearestSnapshot(snapshots, checkpointSec, 90);
+    if (!snapshot) continue;
+    add({
+      timestampSec: snapshot.timestampSec,
+      title: `${checkpointSec / 60}-minute telemetry snapshot`,
+      note: describeSnapshot(snapshot)
+    });
+  }
+
+  const latest = snapshots.at(-1);
+  if (latest) {
+    add({
+      timestampSec: latest.timestampSec,
+      title: `Final telemetry snapshot at ${formatTime(latest.timestampSec)}`,
+      note: describeSnapshot(latest)
+    });
+  }
+
+  return notes.sort((a, b) => a.timestampSec - b.timestampSec).slice(0, 4);
+}
+
+function nearestSnapshot(
+  snapshots: CoachReportInput["match"]["snapshots"],
+  targetSec: number,
+  toleranceSec: number
+): CoachReportInput["match"]["snapshots"][number] | undefined {
+  const nearest = snapshots.reduce<CoachReportInput["match"]["snapshots"][number] | undefined>((best, snapshot) => {
+    if (!best) return snapshot;
+    return Math.abs(snapshot.timestampSec - targetSec) < Math.abs(best.timestampSec - targetSec) ? snapshot : best;
+  }, undefined);
+  return nearest && Math.abs(nearest.timestampSec - targetSec) <= toleranceSec ? nearest : undefined;
+}
+
+function describeSnapshot(snapshot: CoachReportInput["match"]["snapshots"][number]): string {
+  const score = snapshot.scores;
+  const items = snapshot.items.map((item) => item.displayName).filter((item): item is string => Boolean(item));
+  const level = typeof snapshot.level === "number" ? `, level ${snapshot.level}` : "";
+  const itemText = items.length > 0 ? `, items: ${items.join(", ")}` : "";
+  return `At ${formatTime(snapshot.timestampSec)}, telemetry recorded ${score.kills}/${score.deaths}/${score.assists}, ${score.creepScore} CS${level}${itemText}.`;
 }
 
 function firstSentence(text: string): string {

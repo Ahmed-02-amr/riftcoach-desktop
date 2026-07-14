@@ -1,5 +1,5 @@
 import type { ActivePlayerDetailsSnapshot, CoachReportInput, CoachTone, MatchContext, NormalizedEvent, NormalizedPlayerSnapshot, NormalizedSnapshot, RawLiveDataTelemetry, VisualObservation } from "@riftcoach/core";
-import { CoachReportJsonSchema, casualGameLabel, casualGameReason, formatTime, isCasualReviewMode } from "@riftcoach/core";
+import { CoachReportJsonSchema, casualGameLabel, casualGameReason, formatTime, isCasualReviewMode, isVerifiedVisualObservation } from "@riftcoach/core";
 import { isFinalStatsOnlyRoflMatch, isRoflWithoutTimeline, isVisualOnlyMatch } from "./evidence-mode";
 
 export function buildPostGameCoachMessages(input: CoachReportInput): Array<{ role: "system" | "user"; content: string }> {
@@ -20,8 +20,9 @@ export function buildPostGameCoachMessages(input: CoachReportInput): Array<{ rol
         "Use the telemetry block as first-class evidence: check key snapshots, final scoreboard, combat events, objectives, item progression, and role evidence before choosing the main focus.",
         "When rawRiotLiveClient data is present, inspect it before deciding. It is raw Riot /liveclientdata/allgamedata JSON from selected stored snapshots, not a summary.",
         "Treat Live Client values as sampled snapshots. Do not claim exact HP, resource, cooldown, dead/alive, or item state at a death unless a supplied raw or normalized snapshot is at that moment or very near it.",
-        "RiftCoach does not receive camera intent, wave/minion positions, mouse input, exact pathing between samples, or exact ability casts from Riot Live Client data. Only claim those from visual bookmarks if supplied.",
-        "When the telemetry block says visual-only upload or replay review, do not infer missing scoreboard, champion, matchup, objective, or item facts. Use visual bookmarks as the primary evidence.",
+        "RiftCoach does not receive camera intent, wave/minion positions, mouse input, exact pathing between samples, or exact ability casts from Riot Live Client data. Only claim those from a visual observation explicitly marked as verified evidence.",
+        "Timestamp bookmarks and local pixel scans are navigation aids, not image understanding. They do not prove positioning, wave state, camera focus, target selection, or why a play succeeded or failed.",
+        "When the telemetry block says visual-only upload or replay review, do not infer missing scoreboard, champion, matchup, objective, item, or frame-content facts.",
         "Benchmarks are context, not the review. Never make CS, gold, vision, or benchmark deltas the main mistake by themselves.",
         "If a benchmark looks bad, tie it to a concrete decision pattern from telemetry: death timing, wave choice, recall timing, objective setup, positioning, or a visual bookmark.",
         "Prefer a timestamped decision mistake over a generic statistical comparison whenever both are available.",
@@ -294,8 +295,8 @@ function buildTelemetryPacket(match: MatchContext, settings: CoachReportInput["s
     capture: {
       source: visualOnly
         ? match.game?.gameMode === "ROFL_REPLAY"
-          ? "League ROFL replay frames captured by RiftCoach through Riot's local Replay API plus desktop screenshots; no Riot Live Client scoreboard telemetry was recorded for this review"
-          : "Uploaded local VOD frames analyzed by RiftCoach; no Riot Live Client telemetry was recorded for this review"
+          ? "League ROFL replay bookmarks captured through Riot's local Replay API; no semantic image observation or Riot Live Client scoreboard telemetry was recorded unless explicitly listed"
+          : "Uploaded local VOD bookmarks extracted by RiftCoach; no semantic image observation or Riot Live Client telemetry was recorded unless explicitly listed"
         : roflWithoutTimeline
           ? finalStatsOnly
             ? "Offline ROFL final-scoreboard metadata normalized by RiftCoach; no minute-by-minute timeline was available"
@@ -479,7 +480,7 @@ function buildPlayerCombatTimeline(match: MatchContext): CombatEventTelemetry[] 
 }
 
 function buildVisualBookmarks(observations: VisualObservation[]): Array<{ timestamp: string; timestampSec: number; category: string; title: string; details: string; evidence: string[] }> {
-  return observations.slice(0, MAX_VISUAL_BOOKMARKS).map((obs) => ({
+  return observations.filter(isVerifiedVisualObservation).slice(0, MAX_VISUAL_BOOKMARKS).map((obs) => ({
     timestamp: formatTime(obs.timestampSec),
     timestampSec: obs.timestampSec,
     category: obs.category,
@@ -502,9 +503,9 @@ function buildTelemetryEvidence(params: {
 }): string[] {
   const evidence: string[] = [];
   if (isVisualOnlyMatch(params.match)) {
-    evidence.push(
-      `Visual-only ${params.match.game?.gameMode === "ROFL_REPLAY" ? "ROFL replay" : "VOD"} review: no Riot Live Client scoreboard, champion, event, item, CS, or ward telemetry was available; visual bookmarks are the primary evidence.`
-    );
+    evidence.push(params.visualBookmarks.length > 0
+      ? `Visual-only ${params.match.game?.gameMode === "ROFL_REPLAY" ? "ROFL replay" : "VOD"} review: no Riot Live Client scoreboard telemetry was available; only the listed verified visual observations may support coaching claims.`
+      : `Visual-only ${params.match.game?.gameMode === "ROFL_REPLAY" ? "ROFL replay" : "VOD"} review: timestamp bookmarks exist, but no verified semantic visual observation or Riot Live Client scoreboard telemetry was available. Do not infer frame content.`);
     const bookmarks = params.visualBookmarks.map((bookmark) => `${bookmark.timestamp}: ${bookmark.title}`).join("; ");
     if (bookmarks) evidence.push(`Visual bookmarks: ${bookmarks}.`);
     return evidence;
@@ -662,7 +663,7 @@ function buildDataAvailability(match: MatchContext): unknown {
   return {
     available: [
       visualOnly
-        ? "Visual bookmarks from uploaded VOD/ROFL frames when captured."
+        ? "Timestamp bookmarks from uploaded VOD/ROFL frames; only observations explicitly marked verified can support content claims."
         : roflWithoutTimeline
           ? "Offline ROFL final scoreboard: participants, champion/role, KDA, CS, vision, level, gold, and items when present."
           : "Normalized Riot Live Client or Match-v5 timeline snapshots.",
@@ -671,7 +672,7 @@ function buildDataAvailability(match: MatchContext): unknown {
       "Replay API for ROFL can supply replay playback/render metadata and screenshots, but not parsed match-history telemetry by itself."
     ].filter(Boolean),
     sampledNotContinuous: visualOnly
-      ? ["Visual frames are sampled bookmarks, not continuous video understanding."]
+      ? ["Visual frames are sampled bookmarks, not image or continuous-video understanding unless a separate observation is explicitly marked verified."]
       : roflWithoutTimeline
         ? [finalStatsOnly
           ? "Only the final scoreboard is available. It cannot establish when or why a death, fight, reset, wave state, path, or objective decision happened."

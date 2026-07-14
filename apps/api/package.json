@@ -1,6 +1,6 @@
 {
   "name": "@riftcoach/api",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {

@@ -184,6 +184,29 @@ export class VisualReviewService {
     return this.repo.listVodImports(sessionId);
   }
 
+  saveEvidenceObservation(input: {
+    sessionId: string;
+    timestampSec: number;
+    title: string;
+    details: string;
+    evidence: string[];
+    category?: VisualObservation["category"];
+    confidence?: number;
+  }): VisualObservation {
+    const observation: VisualObservation = {
+      id: nanoid(12),
+      sessionId: input.sessionId,
+      timestampSec: input.timestampSec,
+      category: input.category ?? "unknown",
+      confidence: input.confidence ?? 0.9,
+      title: input.title,
+      details: input.details,
+      evidence: input.evidence
+    };
+    this.repo.saveObservation(observation);
+    return observation;
+  }
+
   saveReplayFrame(frame: ScreenshotFrame, input?: {
     title?: string;
     details?: string;

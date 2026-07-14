@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CoachReport, CoachReportInput } from "@riftcoach/core";
-import { enforceActionableCoachReport } from "../src/report-quality.ts";
+import { enforceActionableCoachReport, enforceEvidenceBackedCoachReport } from "../src/report-quality.ts";
 
 function input(): CoachReportInput {
   return {
@@ -142,5 +142,78 @@ describe("report actionability enforcement", () => {
     expect(repaired.mainMistake.title).toBe("Catch the safe wave before chasing the play");
     expect(repaired.mainMistake.explanation).toContain("Low CS usually comes from repeated wave choices");
     expect(repaired.nextGameDrill.steps).toContain("Before leaving lane, check whether a wave is about to reach your tower.");
+  });
+
+  it("replaces parser praise and unsupported timeline claims in final-stats-only ROFL reviews", () => {
+    const base = input();
+    const player = {
+      ...base.match.player,
+      championName: "MasterYi",
+      livePosition: "JUNGLE",
+      role: "jungle" as const,
+      roleSource: "ROFL2 metadata"
+    };
+    const roflInput: CoachReportInput = {
+      ...base,
+      insights: [],
+      match: {
+        ...base.match,
+        game: { gameMode: "ROFL_REPLAY", mapName: "Summoner's Rift", reviewMode: "coaching" },
+        player,
+        snapshots: [{
+          sessionId: base.match.sessionId,
+          timestampSec: 1320.542,
+          phase: "mid",
+          game: { gameMode: "ROFL_REPLAY", mapName: "Summoner's Rift", reviewMode: "coaching" },
+          player,
+          scores: { kills: 2, deaths: 8, assists: 0, creepScore: 114, wardScore: 19 },
+          items: [],
+          allPlayers: [
+            { ...player, team: "ORDER", scores: { kills: 2, deaths: 8, assists: 0, creepScore: 114, wardScore: 19 }, items: [] },
+            { championName: "Zed", role: "mid", team: "ORDER", scores: { kills: 5, deaths: 5, assists: 3, creepScore: 111 }, items: [] }
+          ]
+        }],
+        events: [],
+        aggregate: {
+          durationSec: 1320.542,
+          kills: 2,
+          deaths: 8,
+          assists: 0,
+          teamKills: 16,
+          csPerMin: 5.18,
+          visionScore: 19,
+          deathsBefore10: 0,
+          deathTimestamps: [],
+          itemNamesFinal: [],
+          totalSnapshots: 1
+        }
+      }
+    };
+    const malformed: CoachReport = {
+      ...benchmarkSlopReport(),
+      positiveHabit: {
+        title: "Final stats parsed cleanly from ROFL metadata",
+        explanation: "The telemetry envelope parsed all participants and role identification was reliable."
+      },
+      mainMistake: {
+        title: "Commit to team fights without wave state or reset",
+        explanation: "You arrived late because the wave was not pushed.",
+        evidence: ["Kill participation: 13%"],
+        whyItMatters: "The team lost position."
+      },
+      warnings: ["This review is based on visual-only ROFL replay data."],
+      timelineNotes: [{ timestampSec: 600, title: "Vision timing", note: "At 10 minutes vision was trailing." }]
+    };
+
+    const repaired = enforceEvidenceBackedCoachReport(malformed, roflInput);
+
+    expect(repaired.positiveHabit.title).toBe("Maintained jungle farm pace");
+    expect(repaired.positiveHabit.explanation).toContain("Master Yi");
+    expect(repaired.positiveHabit.explanation).not.toMatch(/parsed|metadata|telemetry envelope/i);
+    expect(repaired.mainMistake.title).toBe("Reduce repeat deaths");
+    expect(repaired.mainMistake.explanation).not.toMatch(/wave|arrived late|reset window/i);
+    expect(repaired.timelineNotes).toEqual([]);
+    expect(repaired.warnings.join("\n")).toMatch(/final-scoreboard metadata only/i);
+    expect(repaired.warnings.join("\n")).not.toMatch(/visual-only/i);
   });
 });

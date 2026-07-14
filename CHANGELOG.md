@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.3
+
+- Added keyless automatic Rank/LP synchronization through the running League Client's authenticated localhost API.
+- Discovers the League lockfile, uses its temporary credentials in memory, and never stores or ships those credentials.
+- Captures the active Solo/Duo or Flex snapshot before a match and retries at 15, 45, and 90 seconds after a ranked match to record the corresponding LP change.
+- Persists match-linked before/after snapshots, queue, wins/losses, source, and sync time in SQLite while retaining manual rank as an offline fallback.
+- Updated Auto Journal with live sync status, one-click refresh, queue filtering, per-match LP deltas, and clearer stale/offline states.
+- Added automatic-sync and preferred-queue controls, lockfile/parser/storage regression tests, and updated local API documentation.
+
+## 0.4.2
+
+- Fixed offline ROFL reviews being mislabeled as visual-only despite having final-scoreboard telemetry.
+- Prevented parser, metadata, import, and role-detection status from being saved as player strengths.
+- Added evidence-bounded final-stat coaching that never invents wave state, pathing, fight timing, resets, or positioning without a timeline or replay frames.
+- Existing malformed ROFL Journal entries and reports are repaired automatically when the Journal loads.
+- Humanized Riot champion identifiers such as `MasterYi` to `Master Yi`.
+- Journal entries now use the session/match start time and show a clean `Not tracked` state when Rank/LP was not saved.
+
+## 0.4.1
+
+- Replaced replay-client-only `.rofl` reviews with offline ROFL/ROFL2 metadata parsing for participants, identity, champion, role, final KDA, CS, vision, level, items, result, duration, patch, and match ID.
+- Made League Replay API playback optional: offline telemetry reviews now complete even when League cannot launch or `EnableReplayApi` is disabled.
+- Added one-click Replay API setup that discovers the League installation, backs up `game.cfg`, writes `EnableReplayApi=1` under `[General]`, and verifies the result.
+- Added optional encrypted Riot API credentials and Match-v5 enrichment for match details, minute frames, champion kills, and objective/building events.
+- Added opt-in automatic local VOD capture for the League game window, with no microphone and no full-desktop fallback, then attaches the recording to the ended session before report generation.
+- Added optional League Replay API WebM rendering and retained replay-frame capture as supplemental visual evidence.
+- Updated the Live Recorder and Settings UI with replay readiness, one-click setup, VOD state, Riot platform/key diagnostics, and clearly separated offline versus optional evidence paths.
+- Added parser, regional-routing, Replay API config, and game-window ffmpeg command tests, including validation against a current ROFL2 file.
+
 ## 0.4.0
 
 - Replaced Training Objectives with an automatic Journal built from completed coaching reviews.

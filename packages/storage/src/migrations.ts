@@ -22,6 +22,27 @@ export function runMigrations(db: Database.Database): void {
       report_status TEXT NOT NULL DEFAULT 'pending'
     );
 
+    CREATE TABLE IF NOT EXISTS rank_snapshots (
+      scope_key TEXT PRIMARY KEY,
+      session_id TEXT,
+      phase TEXT NOT NULL,
+      queue_type TEXT NOT NULL,
+      rank TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      division TEXT,
+      lp INTEGER NOT NULL,
+      wins INTEGER,
+      losses INTEGER,
+      provisional INTEGER,
+      source TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      match_queue_id INTEGER,
+      FOREIGN KEY(session_id) REFERENCES local_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rank_snapshots_session_phase
+      ON rank_snapshots(session_id, phase);
+
     CREATE TABLE IF NOT EXISTS live_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,

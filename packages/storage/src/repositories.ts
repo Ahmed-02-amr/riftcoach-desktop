@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import {
+  formatChampionName,
   normalizeAppSettings,
   type AppSettings,
   type CoachChatMessage,
@@ -8,6 +9,9 @@ import {
   type JournalEntry,
   type NormalizedEvent,
   type NormalizedSnapshot,
+  type RankedQueueType,
+  type RankedSnapshot,
+  type RankSnapshotPhase,
   type ScreenshotFrame,
   type TrainingGoal,
   type VisualObservation,
@@ -178,6 +182,82 @@ export class ReportRepository {
   }
 }
 
+export class RankSnapshotRepository {
+  constructor(private readonly db: Database.Database) {}
+
+  saveCurrent(snapshot: RankedSnapshot): void {
+    this.save(`current:${snapshot.queueType}`, undefined, "current", snapshot);
+  }
+
+  saveForSession(sessionId: string, phase: RankSnapshotPhase, snapshot: RankedSnapshot): void {
+    this.save(`${sessionId}:${phase}`, sessionId, phase, snapshot);
+  }
+
+  getCurrent(queueType: RankedQueueType): RankedSnapshot | undefined {
+    return this.get(`current:${queueType}`);
+  }
+
+  getForSession(sessionId: string, phase: RankSnapshotPhase): RankedSnapshot | undefined {
+    return this.get(`${sessionId}:${phase}`);
+  }
+
+  private save(scopeKey: string, sessionId: string | undefined, phase: RankSnapshotPhase | "current", snapshot: RankedSnapshot): void {
+    this.db.prepare(`
+      INSERT INTO rank_snapshots(
+        scope_key, session_id, phase, queue_type, rank, tier, division, lp,
+        wins, losses, provisional, source, synced_at, match_queue_id
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope_key) DO UPDATE SET
+        session_id = excluded.session_id,
+        phase = excluded.phase,
+        queue_type = excluded.queue_type,
+        rank = excluded.rank,
+        tier = excluded.tier,
+        division = excluded.division,
+        lp = excluded.lp,
+        wins = excluded.wins,
+        losses = excluded.losses,
+        provisional = excluded.provisional,
+        source = excluded.source,
+        synced_at = excluded.synced_at,
+        match_queue_id = excluded.match_queue_id
+    `).run(
+      scopeKey,
+      sessionId ?? null,
+      phase,
+      snapshot.queueType,
+      snapshot.rank,
+      snapshot.tier,
+      snapshot.division ?? null,
+      snapshot.lp,
+      snapshot.wins ?? null,
+      snapshot.losses ?? null,
+      snapshot.provisional === undefined ? null : snapshot.provisional ? 1 : 0,
+      snapshot.source,
+      snapshot.syncedAtIso,
+      snapshot.matchQueueId ?? null
+    );
+  }
+
+  private get(scopeKey: string): RankedSnapshot | undefined {
+    const row = this.db.prepare("SELECT * FROM rank_snapshots WHERE scope_key = ?").get(scopeKey) as any | undefined;
+    if (!row) return undefined;
+    return {
+      queueType: row.queue_type,
+      rank: row.rank,
+      tier: row.tier,
+      division: row.division ?? undefined,
+      lp: row.lp,
+      wins: row.wins ?? undefined,
+      losses: row.losses ?? undefined,
+      provisional: row.provisional === null ? undefined : Boolean(row.provisional),
+      source: row.source,
+      syncedAtIso: row.synced_at,
+      matchQueueId: row.match_queue_id ?? undefined
+    };
+  }
+}
+
 export class JournalRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -201,12 +281,15 @@ export class JournalRepository {
         strength_title = excluded.strength_title,
         strength_detail = excluded.strength_detail,
         weakness_title = excluded.weakness_title,
-        weakness_detail = excluded.weakness_detail
+        weakness_detail = excluded.weakness_detail,
+        rank = COALESCE(journal_entries.rank, excluded.rank),
+        lp = COALESCE(journal_entries.lp, excluded.lp),
+        created_at = excluded.created_at
     `).run(
       `journal-${report.id}`,
       report.id,
       report.sessionId,
-      session?.champion ?? null,
+      session?.champion ? formatChampionName(session.champion) : null,
       session?.role ?? null,
       report.positiveHabit.title,
       report.positiveHabit.explanation,
@@ -214,27 +297,54 @@ export class JournalRepository {
       report.mainMistake.explanation,
       profile.rank ?? null,
       profile.lp ?? null,
-      report.createdAtIso
+      session?.startedAt ?? report.createdAtIso
     );
+  }
+
+  updateRankFromSnapshot(sessionId: string, snapshot: RankedSnapshot): void {
+    this.db.prepare("UPDATE journal_entries SET rank = ?, lp = ? WHERE session_id = ?")
+      .run(snapshot.rank, snapshot.lp, sessionId);
   }
 
   list(limit = 100): JournalEntry[] {
     const rows = this.db.prepare("SELECT * FROM journal_entries ORDER BY created_at DESC LIMIT ?").all(limit) as any[];
-    return rows.map((row) => ({
-      id: row.id,
-      reportId: row.report_id,
-      sessionId: row.session_id,
-      champion: row.champion ?? undefined,
-      role: row.role ?? undefined,
-      createdAtIso: row.created_at,
-      strengthTitle: row.strength_title,
-      strengthDetail: row.strength_detail,
-      weaknessTitle: row.weakness_title,
-      weaknessDetail: row.weakness_detail,
-      rank: row.rank ?? undefined,
-      lp: row.lp ?? undefined
-    }));
+    const rankSnapshots = new RankSnapshotRepository(this.db);
+    return rows.map((row) => {
+      const before = rankSnapshots.getForSession(row.session_id, "before");
+      const after = rankSnapshots.getForSession(row.session_id, "after");
+      const finalRank = after?.rank ?? row.rank ?? before?.rank;
+      const finalLp = after?.lp ?? row.lp ?? before?.lp;
+      return {
+        id: row.id,
+        reportId: row.report_id,
+        sessionId: row.session_id,
+        champion: row.champion ?? undefined,
+        role: row.role ?? undefined,
+        createdAtIso: row.created_at,
+        strengthTitle: row.strength_title,
+        strengthDetail: row.strength_detail,
+        weaknessTitle: row.weakness_title,
+        weaknessDetail: row.weakness_detail,
+        rank: finalRank,
+        lp: finalLp,
+        rankBefore: before?.rank,
+        lpBefore: before?.lp,
+        lpDelta: before && after ? rankScore(after.rank, after.lp) - rankScore(before.rank, before.lp) : undefined,
+        rankQueue: after?.queueType ?? before?.queueType,
+        rankSource: after?.source ?? before?.source,
+        rankSyncedAtIso: after?.syncedAtIso ?? before?.syncedAtIso
+      };
+    });
   }
+}
+
+function rankScore(rank: string, lp: number): number {
+  const [tier = "", division = "IV"] = rank.trim().toUpperCase().split(/\s+/);
+  const tiers = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+  const divisions: Record<string, number> = { IV: 0, III: 1, II: 2, I: 3 };
+  const tierIndex = Math.max(0, tiers.indexOf(tier));
+  const divisionIndex = tierIndex >= 7 ? 0 : divisions[division] ?? 0;
+  return tierIndex * 400 + divisionIndex * 100 + lp;
 }
 
 export class ReviewChatRepository {
@@ -422,6 +532,7 @@ export class MaintenanceRepository {
       DELETE FROM coach_reports;
       DELETE FROM live_events;
       DELETE FROM live_snapshots;
+      DELETE FROM rank_snapshots;
       DELETE FROM local_sessions;
       DELETE FROM llm_runs;
     `);

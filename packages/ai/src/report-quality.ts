@@ -1,5 +1,6 @@
 import type { CoachInsight, CoachReport, CoachReportInput, InsightCategory } from "@riftcoach/core";
-import { formatTime, isCasualReviewMode } from "@riftcoach/core";
+import { formatChampionName, formatTime, isCasualReviewMode } from "@riftcoach/core";
+import { isFinalStatsOnlyRoflMatch, isVisualOnlyMatch } from "./evidence-mode";
 
 const DECISION_CATEGORIES = new Set<InsightCategory>([
   "laning",
@@ -47,6 +48,205 @@ export function enforceActionableCoachReport(report: CoachReport, input: CoachRe
   };
 }
 
+const SYSTEM_HABIT_PATTERN = /\b(parse[dr]?|metadata|telemetry|import(?:ed)?|role identification|capture[dr]?|system reliability)\b/i;
+const FINAL_STATS_WARNING =
+  "Offline ROFL review used final-scoreboard metadata only. Without Match-v5 timeline data or replay frames, RiftCoach cannot verify when or why each outcome happened.";
+
+const ROLE_BASELINES: Record<string, { csPerMin: number; visionPerMin: number; killParticipation: number }> = {
+  top: { csPerMin: 6.2, visionPerMin: 0.48, killParticipation: 0.3 },
+  jungle: { csPerMin: 5.1, visionPerMin: 0.72, killParticipation: 0.45 },
+  mid: { csPerMin: 6.5, visionPerMin: 0.52, killParticipation: 0.35 },
+  adc: { csPerMin: 6.8, visionPerMin: 0.42, killParticipation: 0.35 },
+  support: { csPerMin: 0.8, visionPerMin: 1.35, killParticipation: 0.45 },
+  unknown: { csPerMin: 5.8, visionPerMin: 0.62, killParticipation: 0.35 }
+};
+
+/**
+ * Keeps system/import status out of coaching content and constrains scoreboard-only
+ * ROFL reviews to claims supported by the final metadata envelope.
+ */
+export function enforceEvidenceBackedCoachReport(report: CoachReport, input: CoachReportInput): CoachReport {
+  if (report.reviewType === "casual_mode" || isCasualReviewMode(input.match.game)) return report;
+  if (isFinalStatsOnlyRoflMatch(input.match)) return buildFinalStatsOnlyRoflReport(report, input);
+  if (!SYSTEM_HABIT_PATTERN.test(`${report.positiveHabit.title}\n${report.positiveHabit.explanation}`)) return report;
+  return { ...report, positiveHabit: deriveFinalStatsStrength(input) };
+}
+
+function buildFinalStatsOnlyRoflReport(report: CoachReport, input: CoachReportInput): CoachReport {
+  const champion = formatChampionName(input.match.player.championName);
+  const latest = [...input.match.snapshots].sort((a, b) => a.timestampSec - b.timestampSec).at(-1);
+  const durationSec = Math.max(1, input.match.aggregate.durationSec);
+  const durationMin = durationSec / 60;
+  const score = input.match.aggregate;
+  const cs = latest?.scores.creepScore ?? Math.round(score.csPerMin * durationMin);
+  const vision = score.visionScore;
+  const positiveHabit = deriveFinalStatsStrength(input);
+  const focus = deriveFinalStatsFocus(input);
+  const scoreboard = `${champion} ${score.kills}/${score.deaths}/${score.assists}, ${cs} CS${typeof vision === "number" ? `, ${vision} vision` : ""} in ${formatTime(durationSec)}`;
+  const warnings = report.warnings.filter((warning) => !/visual-only|no Riot Live Client scoreboard|visual bookmarks|metadata envelope parsing/i.test(warning));
+
+  return {
+    ...report,
+    summary:
+      `${scoreboard}. ${positiveHabit.title} is the clearest supported strength, while ${focus.mainMistake.title.toLocaleLowerCase()} is the clearest next-game focus. ` +
+      "This import has final stats but no event timeline, so RiftCoach will not invent the wave state, pathing, positioning, or exact decisions behind those numbers.",
+    mainMistake: focus.mainMistake,
+    positiveHabit,
+    timelineNotes: [],
+    nextGameDrill: focus.nextGameDrill,
+    warnings: [...warnings, ...(warnings.includes(FINAL_STATS_WARNING) ? [] : [FINAL_STATS_WARNING])]
+  };
+}
+
+function deriveFinalStatsStrength(input: CoachReportInput): CoachReport["positiveHabit"] {
+  const match = input.match;
+  const champion = formatChampionName(match.player.championName);
+  const role = match.player.role ?? "unknown";
+  const baseline = ROLE_BASELINES[role] ?? ROLE_BASELINES.unknown!;
+  const durationMin = Math.max(1, match.aggregate.durationSec / 60);
+  const latest = [...match.snapshots].sort((a, b) => a.timestampSec - b.timestampSec).at(-1);
+  const cs = latest?.scores.creepScore ?? Math.round(match.aggregate.csPerMin * durationMin);
+  const vision = match.aggregate.visionScore;
+  const visionPerMin = typeof vision === "number" ? vision / durationMin : undefined;
+  const teamKills = match.aggregate.teamKills;
+  const participation = teamKills ? (match.aggregate.kills + match.aggregate.assists) / teamKills : undefined;
+
+  if (role !== "support" && match.aggregate.csPerMin >= baseline.csPerMin) {
+    return {
+      title: `Maintained ${role === "unknown" ? "resource" : role} farm pace`,
+      explanation:
+        `${champion} finished with ${cs} CS in ${formatTime(match.aggregate.durationSec)}, or ${match.aggregate.csPerMin.toFixed(1)} CS per minute. ` +
+        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} median, making resource collection the clearest positive signal available from the final scoreboard.`
+    };
+  }
+  if (visionPerMin !== undefined && visionPerMin >= baseline.visionPerMin) {
+    return {
+      title: "Contributed useful vision",
+      explanation:
+        `${champion} recorded ${vision} vision score in ${formatTime(match.aggregate.durationSec)} (${visionPerMin.toFixed(2)} per minute). ` +
+        `That meets RiftCoach's built-in ${role === "unknown" ? "role" : role} median and is the strongest supported positive from the final stats.`
+    };
+  }
+  if (match.aggregate.deaths <= 2) {
+    return {
+      title: "Protected the death budget",
+      explanation: `${champion} finished with ${match.aggregate.deaths} deaths in ${formatTime(match.aggregate.durationSec)}. The final scoreboard supports survival as the clearest positive, though it cannot show the decisions that produced it.`
+    };
+  }
+  if (participation !== undefined && participation >= baseline.killParticipation) {
+    return {
+      title: "Contributed to team takedowns",
+      explanation: `${champion} contributed ${match.aggregate.kills + match.aggregate.assists} takedowns across ${teamKills} team kills (${Math.round(participation * 100)}%). That involvement is the clearest positive supported by the final scoreboard.`
+    };
+  }
+  return {
+    title: "Kept collecting resources",
+    explanation: `${champion} finished with ${cs} CS in ${formatTime(match.aggregate.durationSec)}. No stronger positive clears a role-adjusted threshold in the final stats, so RiftCoach is keeping this signal modest instead of inventing praise.`
+  };
+}
+
+function deriveFinalStatsFocus(input: CoachReportInput): Pick<CoachReport, "mainMistake" | "nextGameDrill"> {
+  const match = input.match;
+  const champion = formatChampionName(match.player.championName);
+  const role = match.player.role ?? "unknown";
+  const baseline = ROLE_BASELINES[role] ?? ROLE_BASELINES.unknown!;
+  const durationMin = Math.max(1, match.aggregate.durationSec / 60);
+  const deathsPerTen = (match.aggregate.deaths / durationMin) * 10;
+  const latest = [...match.snapshots].sort((a, b) => a.timestampSec - b.timestampSec).at(-1);
+  const cs = latest?.scores.creepScore ?? Math.round(match.aggregate.csPerMin * durationMin);
+  const vision = match.aggregate.visionScore;
+  const visionPerMin = typeof vision === "number" ? vision / durationMin : undefined;
+  const teamKills = match.aggregate.teamKills;
+  const participation = teamKills ? (match.aggregate.kills + match.aggregate.assists) / teamKills : undefined;
+  const scoreboardEvidence = `Final scoreboard: ${champion} ${match.aggregate.kills}/${match.aggregate.deaths}/${match.aggregate.assists}, ${cs} CS${typeof vision === "number" ? `, ${vision} vision` : ""} in ${formatTime(match.aggregate.durationSec)}.`;
+  const limitation = "Final-only ROFL metadata has no event timing, so it cannot identify the cause of this result.";
+
+  if (match.aggregate.deaths >= 6 || deathsPerTen >= 2.5) {
+    const targetDeaths = Math.max(3, match.aggregate.deaths - 2);
+    return {
+      mainMistake: {
+        title: "Reduce repeat deaths",
+        explanation:
+          `${champion} recorded ${match.aggregate.deaths} deaths in ${formatTime(match.aggregate.durationSec)}, or ${deathsPerTen.toFixed(1)} deaths per 10 minutes. ` +
+          "That is the largest controllable cost visible in the final scoreboard. The metadata cannot tell whether those deaths came from invades, objective fights, side lanes, or late re-entries, so the coaching claim stops at the supported signal: protect more of your time on the map.",
+        evidence: [scoreboardEvidence, `Death rate: ${deathsPerTen.toFixed(1)} per 10 minutes.`, limitation],
+        whyItMatters: "Every death removes farming, vision, and objective time while giving the opposing team gold and tempo. Cutting two deaths is a concrete way to preserve more opportunities without pretending the final scoreboard explains each mistake."
+      },
+      nextGameDrill: {
+        title: "One-check-before-commit drill",
+        steps: [
+          "Before entering a fight or unwarded area, confirm that at least one teammate is in range to follow up.",
+          "After every death, take one safe camp, wave, or reset before returning to the same contested area.",
+          "If your exit route and nearby ally positions are both unclear, disengage and keep your map time."
+        ],
+        successMetric: `Finish the next game with no more than ${targetDeaths} deaths.`,
+        duration: "next_game"
+      }
+    };
+  }
+
+  if (participation !== undefined && teamKills! >= 6 && participation < baseline.killParticipation) {
+    return {
+      mainMistake: {
+        title: "Increase useful fight involvement",
+        explanation: `${champion} contributed ${match.aggregate.kills + match.aggregate.assists} takedowns across ${teamKills} team kills (${Math.round(participation * 100)}%). The final scoreboard supports low involvement as a focus, but it does not show whether the cause was pathing, timing, or fight selection.`,
+        evidence: [scoreboardEvidence, `Kill participation: ${Math.round(participation * 100)}%.`, limitation],
+        whyItMatters: "Your role needs to convert map time into fights, pressure, or objectives. Raising useful involvement gives your farming and vision a clearer payoff."
+      },
+      nextGameDrill: {
+        title: "Plan the next map window",
+        steps: [
+          "After each recall, choose the next lane, objective, or teammate you can realistically support.",
+          "Ping your intended move before leaving your current camp or wave.",
+          "If no play is available, keep farming on tempo instead of arriving late to a finished fight."
+        ],
+        successMetric: `Reach at least ${Math.round(baseline.killParticipation * 100)}% kill participation in the next game.`,
+        duration: "next_game"
+      }
+    };
+  }
+
+  if (visionPerMin !== undefined && visionPerMin < baseline.visionPerMin * 0.75) {
+    return {
+      mainMistake: {
+        title: "Raise vision coverage",
+        explanation: `${champion} recorded ${vision} vision score in ${formatTime(match.aggregate.durationSec)} (${visionPerMin.toFixed(2)} per minute). That is the clearest below-baseline final-stat signal for ${role}.`,
+        evidence: [scoreboardEvidence, `Vision rate: ${visionPerMin.toFixed(2)} per minute.`, limitation],
+        whyItMatters: "More useful vision protects map time and gives your team better information before committing to contested areas."
+      },
+      nextGameDrill: {
+        title: "Ward before the danger line",
+        steps: [
+          "Place vision before crossing river or entering objective fog.",
+          "On each recall after 8:00, buy a control ward when inventory and gold allow it.",
+          "Replace expired vision before the next major objective instead of after contact starts."
+        ],
+        successMetric: `Reach at least ${Math.ceil(baseline.visionPerMin * durationMin)} vision score in a game of similar length.`,
+        duration: "next_game"
+      }
+    };
+  }
+
+  return {
+    mainMistake: {
+      title: "Convert stable stats into more impact",
+      explanation: `${champion}'s final scoreboard does not contain one severe role-adjusted outlier beyond the listed totals. Without a timeline or replay frames, RiftCoach cannot responsibly name a specific decision mistake, so the focus is to turn stable resource collection into a higher takedown contribution next game.`,
+      evidence: [scoreboardEvidence, limitation],
+      whyItMatters: "Stable fundamentals matter most when they create pressure, takedowns, or objective control. A measurable involvement target keeps the next review honest."
+    },
+    nextGameDrill: {
+      title: "Name the next contribution",
+      steps: [
+        "After every recall, choose one concrete contribution: farm a full route, cover a teammate, or prepare the next objective.",
+        "Ping that intention before moving so the team can respond.",
+        "After the play, return to the next safe resource instead of drifting without a plan."
+      ],
+      successMetric: "Record at least one more kill or assist than the previous game while keeping deaths no higher.",
+      duration: "next_game"
+    }
+  };
+}
+
 function chooseActionFocus(input: CoachReportInput): CoachInsight | undefined {
   const insights = input.insights ?? [];
   if (isVisualOnlyReview(input)) return insights[0];
@@ -54,7 +254,7 @@ function chooseActionFocus(input: CoachReportInput): CoachInsight | undefined {
 }
 
 function isVisualOnlyReview(input: CoachReportInput): boolean {
-  return input.match.game?.gameMode === "VOD_REVIEW" || input.match.game?.gameMode === "ROFL_REPLAY";
+  return isVisualOnlyMatch(input.match);
 }
 
 function isBenchmarkOnlyReview(report: CoachReport): boolean {

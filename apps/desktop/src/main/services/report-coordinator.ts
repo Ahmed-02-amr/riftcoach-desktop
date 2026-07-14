@@ -1,7 +1,7 @@
 import log from "electron-log";
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { mkdir, readdir, stat } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type Database from "better-sqlite3";
 import {
@@ -18,23 +18,36 @@ import {
   type AppSettings,
   type CoachReport,
   type CoachReportInput,
+  type JournalEntry,
   type KnowledgeContext,
   type KnowledgeSourceSnippet,
   type MatchContext,
   type NormalizedSnapshot,
+  type RankedSnapshot,
   type VodImportResult
 } from "@riftcoach/core";
-import { OllamaCoachProvider, OpenAiProxyCoachProvider, enforceActionableCoachReport } from "@riftcoach/ai";
-import { ReplayClient, type RiotReplayGame, type RiotReplayPlayback, type RiotReplayRender } from "@riftcoach/riot";
+import { OllamaCoachProvider, OpenAiProxyCoachProvider, enforceActionableCoachReport, enforceEvidenceBackedCoachReport } from "@riftcoach/ai";
+import {
+  ReplayClient,
+  RiotMatchV5Client,
+  parseRoflMetadata,
+  riotRegionalRouteForPlatform,
+  type RiotReplayGame,
+  type RiotReplayPlayback,
+  type RiotReplayRender
+} from "@riftcoach/riot";
 import {
   EventRepository,
   JournalRepository,
+  RankSnapshotRepository,
   ReportRepository,
   SessionRepository,
   SettingsRepository,
   SnapshotRepository
 } from "@riftcoach/storage";
 import type { CredentialStore } from "./credential-store";
+import type { LeagueReplayService } from "./league-replay-service";
+import { createRoflReviewData } from "./rofl-review-data";
 import type { ScreenshotService } from "./screenshot-service";
 import type { VisualReviewService } from "./visual-review-service";
 
@@ -44,6 +57,8 @@ interface ReportCoordinatorOptions {
   credentialStore: CredentialStore;
   screenshotService: ScreenshotService;
   visualReviewService: VisualReviewService;
+  leagueReplayService: LeagueReplayService;
+  userDataPath: string;
   notify(title: string, body: string): void;
 }
 
@@ -53,6 +68,7 @@ export class ReportCoordinator {
   private readonly events: EventRepository;
   private readonly reports: ReportRepository;
   private readonly journal: JournalRepository;
+  private readonly rankSnapshots: RankSnapshotRepository;
 
   constructor(private readonly options: ReportCoordinatorOptions) {
     this.sessions = new SessionRepository(options.db);
@@ -60,6 +76,7 @@ export class ReportCoordinator {
     this.events = new EventRepository(options.db);
     this.reports = new ReportRepository(options.db);
     this.journal = new JournalRepository(options.db);
+    this.rankSnapshots = new RankSnapshotRepository(options.db);
   }
 
   async generateForLatestEndedSession(): Promise<CoachReport | undefined> {
@@ -82,6 +99,7 @@ export class ReportCoordinator {
       const visualOnlyMode = isVisualOnlyReview(matchWithVisuals);
       const insights = casualMode ? [] : visualOnlyMode ? runVisualReviewRules(matchWithVisuals) : runExpertRules(matchWithVisuals);
       const settings = this.options.settingsRepo.getAppSettings(DEFAULT_SETTINGS);
+      const rankProfile = this.rankProfileForSession(sessionId, settings);
       const webToken = await this.options.credentialStore.getSecret("ollama-web-search-token");
       const webKnowledge = casualMode
         ? { sources: [], warnings: [] }
@@ -110,7 +128,7 @@ export class ReportCoordinator {
         match: enrichedMatch,
         insights,
         profile: {
-          rank: settings.playerRank,
+          rank: rankProfile.rank,
           mainRole: settings.mainRole
         },
         settings: {
@@ -124,9 +142,10 @@ export class ReportCoordinator {
 
       const rawReport = await this.generateWithConfiguredProvider(input, settings);
       const actionableReport = enforceActionableCoachReport(rawReport, input);
-      const report = attachKnowledgeToReport(actionableReport, knowledge);
+      const evidenceBackedReport = enforceEvidenceBackedCoachReport(actionableReport, input);
+      const report = attachKnowledgeToReport(evidenceBackedReport, knowledge);
       this.reports.save(report);
-      this.journal.saveFromReport(report, session, { rank: settings.playerRank, lp: settings.playerLp });
+      this.journal.saveFromReport(report, session, rankProfile);
       this.sessions.updateReportStatus(sessionId, "ready");
 
       this.options.notify("RiftCoach review ready", report.mainMistake.title);
@@ -136,6 +155,44 @@ export class ReportCoordinator {
       log.error("report generation failed", error);
       throw error;
     }
+  }
+
+  async listJournalEntries(limit = 100): Promise<JournalEntry[]> {
+    const settings = this.options.settingsRepo.getAppSettings(DEFAULT_SETTINGS);
+    for (const storedReport of this.reports.list(limit)) {
+      const session = this.sessions.get(storedReport.sessionId);
+      let report = storedReport;
+      if (session) {
+        try {
+          const context = await this.buildMatchContext(session.id, session.startedAt, session.endedAt);
+          const match: MatchContext = {
+            ...context,
+            visualObservations: this.options.visualReviewService.listObservations(session.id)
+          };
+          report = enforceEvidenceBackedCoachReport(storedReport, {
+            match,
+            insights: [],
+            profile: { rank: this.rankProfileForSession(session.id, settings).rank, mainRole: settings.mainRole },
+            settings: {
+              aiMode: settings.aiMode,
+              privacyMode: settings.privacyMode,
+              coachTone: settings.coachTone,
+              knowledgeMode: settings.knowledgeMode
+            },
+            knowledge: storedReport.knowledgeContext
+          });
+          if (JSON.stringify(report) !== JSON.stringify(storedReport)) this.reports.save(report);
+        } catch (error) {
+          log.warn(`journal repair skipped for session ${session.id}`, error);
+        }
+      }
+      this.journal.saveFromReport(report, session, this.rankProfileForSession(report.sessionId, settings));
+    }
+    return this.journal.list(limit);
+  }
+
+  updateJournalRank(sessionId: string, snapshot: RankedSnapshot): void {
+    this.journal.updateRankFromSnapshot(sessionId, snapshot);
   }
 
   async importVodForSession(sessionId: string, filePath: string, options?: { videoStartOffsetSec?: number }): Promise<VodImportResult> {
@@ -211,111 +268,145 @@ export class ReportCoordinator {
     const replayPath = resolve(filePath);
     if (!existsSync(replayPath)) throw new Error(`ROFL replay file not found: ${filePath}`);
 
-    const warnings: string[] = [];
-    const launchResult = await launchRoflReplay(replayPath);
-    warnings.push(...launchResult.warnings);
-    if (launchResult.needsManualOpen) {
-      this.options.notify(
-        "Open the League replay",
-        "RiftCoach could not launch the .rofl file automatically. Open the replay in League now and leave RiftCoach waiting."
-      );
-    }
-
-    const replayClient = new ReplayClient({ timeoutMs: 2500 });
-    let playback: RiotReplayPlayback;
-    const replayWaitMs = launchResult.needsManualOpen ? 180_000 : 90_000;
-    try {
-      playback = await waitForReplayPlayback(replayClient, replayWaitMs);
-    } catch (error) {
-      const launchNote = launchResult.launched
-        ? ` Launched: ${launchResult.executablePath}.`
-        : " Automatic replay launch was blocked or unavailable; open the replay manually from the League client.";
-      const manualHelp = launchResult.needsManualOpen
-        ? " If Windows or Riot Vanguard blocks external replay launchers, start the replay yourself, keep it on the current League patch, and leave RiftCoach open while it waits for Riot's local Replay API."
-        : "";
-      throw new Error(
-        `ROFL replay support needs the League replay client running for that replay and Riot's local Replay API enabled. RiftCoach could not reach the Replay API after ${Math.round(replayWaitMs / 1000)} seconds.${launchNote}${manualHelp} ${formatProviderError(error)}`
-      );
-    }
-
-    const replayGame = await replayClient.readGame().catch((error) => {
-      warnings.push(`Replay API game metadata was not available: ${formatProviderError(error)}`);
-      return undefined;
-    });
-    const initialRender = await replayClient.readRender().catch((error) => {
-      warnings.push(`Replay API render metadata was not available before capture: ${formatProviderError(error)}`);
-      return undefined;
-    });
+    const metadata = await parseRoflMetadata(replayPath);
     const settings = this.options.settingsRepo.getAppSettings(DEFAULT_SETTINGS);
-    const durationSec = cleanDuration(playback.length ?? playback.duration, 30 * 60);
-    const endedAt = new Date().toISOString();
-    const startedAt = new Date(Math.max(0, Date.now() - durationSec * 1000)).toISOString();
+    const warnings: string[] = [];
+    const matchV5 = await this.loadRiotMatchData(metadata.matchId, metadata.platformId ?? settings.riotPlatform, settings.riotMatchEnrichment);
+    warnings.push(...matchV5.warnings);
     const sessionId = nanoid(12);
+    const reviewData = createRoflReviewData({
+      sessionId,
+      metadata,
+      settings,
+      match: matchV5.match,
+      timeline: matchV5.timeline
+    });
+    warnings.push(...reviewData.warnings);
+    const durationSec = cleanDuration(reviewData.durationSec, 30 * 60);
+    const startedAt = reviewData.startedAtIso ?? new Date(Math.max(0, Date.now() - durationSec * 1000)).toISOString();
+    const endedAt = reviewData.startedAtIso
+      ? new Date(new Date(reviewData.startedAtIso).getTime() + durationSec * 1000).toISOString()
+      : new Date().toISOString();
 
     this.sessions.create({
       id: sessionId,
-      champion: "ROFL Replay",
-      role: settings.mainRole ?? "unknown",
+      riotGameId: metadata.gameId,
+      champion: reviewData.championName,
+      role: reviewData.role ?? "unknown",
       startedAt,
       aiMode: settings.aiMode
     });
     this.sessions.end(sessionId, endedAt);
 
     try {
-      this.snapshots.insert(
+      for (const snapshot of reviewData.snapshots) {
+        this.snapshots.insert(sessionId, snapshot, {
+          source: "rofl-metadata",
+          filePath: replayPath,
+          format: metadata.format,
+          gameVersion: metadata.gameVersion,
+          matchId: metadata.matchId,
+          matchV5Loaded: Boolean(matchV5.match),
+          timelineLoaded: Boolean(matchV5.timeline)
+        });
+      }
+      this.events.upsertMany(sessionId, reviewData.events);
+      this.options.visualReviewService.saveEvidenceObservation({
         sessionId,
-        createVisualOnlySnapshot({
-          sessionId,
-          durationSec,
-          settings,
-          gameMode: "ROFL_REPLAY",
-          mapName: replayMapName(replayGame),
-          championName: "Unknown champion"
-        }),
-        { source: "rofl-replay", filePath: replayPath, playback, game: replayGame, render: initialRender }
-      );
+        timestampSec: durationSec,
+        category: "unknown",
+        confidence: matchV5.match ? 0.99 : 0.94,
+        title: "ROFL telemetry parsed",
+        details:
+          `RiftCoach parsed ${metadata.players.length} participants and the selected player's final stats directly from the ${metadata.format} metadata envelope. ` +
+          (matchV5.timeline
+            ? "Riot Match-v5 added minute frames and event timing."
+            : "This report does not depend on the League replay client or Replay API."),
+        evidence: reviewData.evidence
+      });
 
       let frameCount = 0;
-      let observationCount = 0;
-      for (const timestampSec of planReplayCaptureTimestamps(durationSec, 10)) {
-        try {
-          await replayClient.seek(timestampSec, true);
-          await delay(1500);
-          const checkpointPlayback = await replayClient.readPlayback().catch(() => undefined);
-          const checkpointRender = await replayClient.readRender().catch(() => undefined);
-          const frame = await this.options.screenshotService.capturePrimaryScreen(sessionId, timestampSec, "rofl-replay-frame");
-          if (!frame) {
-            warnings.push(`No screen frame was available at replay time ${formatTime(timestampSec)}.`);
-            continue;
-          }
-          const observations = this.options.visualReviewService.saveReplayFrame(frame, {
-            category: timestampSec < 14 * 60 ? "wave" : "positioning",
-            confidence: 0.66,
-            title: timestampSec < 14 * 60 ? "ROFL laning replay frame" : "ROFL mid-game replay frame",
-            details:
-              `Frame captured from a ROFL replay at ${formatTime(timestampSec)} after seeking with Riot's local Replay API. Playback and render metadata were recorded when available. Review camera focus, wave/map state, spacing, and visible objective setup.`,
-            evidence: [
-              `ROFL file: ${replayPath}`,
-              `Replay time: ${formatTime(timestampSec)}`,
-              "Source: Riot local Replay API seek + local desktop screenshot",
-              ...replayApiEvidence({ playback: checkpointPlayback, render: checkpointRender, game: replayGame })
-            ]
+      let observationCount = 1;
+      let renderedVodPath: string | undefined;
+      const setup = await this.options.leagueReplayService.getSetupStatus().catch((error) => {
+        warnings.push(`Replay API setup could not be checked: ${formatProviderError(error)}`);
+        return undefined;
+      });
+      if (!setup?.enabled) {
+        warnings.push("Replay API is disabled. The offline telemetry report completed; use the one-click setup in Live & Replays to add replay frames or render a VOD.");
+      } else {
+        const launch = await this.options.leagueReplayService.launchReplay(replayPath);
+        if (launch.warning) warnings.push(launch.warning);
+        if (launch.launched) {
+          const replayClient = new ReplayClient({ timeoutMs: 2500 });
+          const playback = await waitForReplayPlayback(replayClient, 75_000).catch((error) => {
+            warnings.push(`The offline report completed, but the League Replay API did not become reachable: ${formatProviderError(error)}`);
+            return undefined;
           });
-          frameCount += 1;
-          observationCount += observations.length;
-        } catch (error) {
-          warnings.push(`Could not capture ROFL replay at ${formatTime(timestampSec)}: ${formatProviderError(error)}`);
-        }
-      }
+          if (playback) {
+            const replayGame = await replayClient.readGame().catch(() => undefined);
+            const initialRender = await replayClient.readRender().catch(() => undefined);
+            const replayDurationSec = cleanDuration(playback.length ?? playback.duration, durationSec);
+            for (const timestampSec of planReplayCaptureTimestamps(replayDurationSec, 10)) {
+              try {
+                await replayClient.seek(timestampSec, true);
+                await delay(1500);
+                const checkpointPlayback = await replayClient.readPlayback().catch(() => undefined);
+                const checkpointRender = await replayClient.readRender().catch(() => undefined);
+                const frame = await this.options.screenshotService.capturePrimaryScreen(sessionId, timestampSec, "rofl-replay-frame");
+                if (!frame) {
+                  warnings.push(`No League replay frame was available at ${formatTime(timestampSec)}.`);
+                  continue;
+                }
+                const observations = this.options.visualReviewService.saveReplayFrame(frame, {
+                  category: timestampSec < 14 * 60 ? "wave" : "positioning",
+                  confidence: 0.66,
+                  title: timestampSec < 14 * 60 ? "ROFL laning replay frame" : "ROFL mid-game replay frame",
+                  details:
+                    `Frame captured from the League replay at ${formatTime(timestampSec)}. Review camera focus, wave/map state, spacing, and visible objective setup.`,
+                  evidence: [
+                    `ROFL file: ${replayPath}`,
+                    `Replay time: ${formatTime(timestampSec)}`,
+                    "Source: Riot local Replay API seek + League-window screenshot",
+                    ...replayApiEvidence({ playback: checkpointPlayback, render: checkpointRender, game: replayGame })
+                  ]
+                });
+                frameCount += 1;
+                observationCount += observations.length;
+              } catch (error) {
+                warnings.push(`Could not capture League replay at ${formatTime(timestampSec)}: ${formatProviderError(error)}`);
+              }
+            }
 
-      if (frameCount === 0) {
-        throw new Error(`ROFL replay opened, but RiftCoach could not capture any replay frames. ${warnings.at(-1) ?? ""}`.trim());
+            if (settings.renderRoflVideos) {
+              renderedVodPath = await renderReplayVideo({
+                replayClient,
+                outputRoot: this.options.userDataPath,
+                sessionId,
+                durationSec: replayDurationSec
+              }).catch((error) => {
+                warnings.push(`Replay video rendering failed; telemetry and frames were kept: ${formatProviderError(error)}`);
+                return undefined;
+              });
+              if (renderedVodPath) {
+                const context = await this.buildMatchContext(sessionId, startedAt, endedAt);
+                const renderedImport = await this.options.visualReviewService.importVodForMatch(context, renderedVodPath, {
+                  videoStartOffsetSec: 0,
+                  maxFrames: 18
+                });
+                frameCount += renderedImport.frameCount;
+                observationCount += renderedImport.observationCount;
+                warnings.push(...renderedImport.warnings);
+              }
+            }
+          }
+        }
       }
 
       const importResult: VodImportResult = {
         id: nanoid(12),
         sessionId,
-        filePath: replayPath,
+        filePath: renderedVodPath ?? replayPath,
         importedAtIso: new Date().toISOString(),
         videoStartOffsetSec: 0,
         durationSec,
@@ -332,6 +423,28 @@ export class ReportCoordinator {
     }
   }
 
+  private async loadRiotMatchData(matchId: string | undefined, platformId: string, enabled: boolean): Promise<{
+    match?: any;
+    timeline?: any;
+    warnings: string[];
+  }> {
+    if (!enabled) return { warnings: [] };
+    if (!matchId) return { warnings: ["Riot Match-v5 enrichment is enabled, but the ROFL filename did not contain a platform and game ID."] };
+    const apiKey = await this.options.credentialStore.getSecret("riot-api-key");
+    if (!apiKey) return { warnings: ["Riot Match-v5 enrichment is enabled, but no Riot API key is saved in Settings."] };
+
+    const client = new RiotMatchV5Client({ apiKey, regionalRoute: riotRegionalRouteForPlatform(platformId) });
+    const warnings: string[] = [];
+    const [matchResult, timelineResult] = await Promise.allSettled([client.getMatch(matchId), client.getTimeline(matchId)]);
+    if (matchResult.status === "rejected") warnings.push(`Riot Match-v5 details were unavailable: ${formatProviderError(matchResult.reason)}`);
+    if (timelineResult.status === "rejected") warnings.push(`Riot Match-v5 timeline was unavailable: ${formatProviderError(timelineResult.reason)}`);
+    return {
+      match: matchResult.status === "fulfilled" ? matchResult.value : undefined,
+      timeline: timelineResult.status === "fulfilled" ? timelineResult.value : undefined,
+      warnings
+    };
+  }
+
   private async buildMatchContext(sessionId: string, startedAtIso: string, endedAtIso?: string): Promise<MatchContext> {
     const snapshotRows = this.snapshots.listWithRaw(sessionId);
     const snapshots = snapshotRows.map((row) => row.snapshot);
@@ -339,6 +452,7 @@ export class ReportCoordinator {
     const match = createMatchContextFromSnapshots({ sessionId, startedAtIso, endedAtIso, snapshots, events });
     const session = this.sessions.get(sessionId);
     const settings = this.options.settingsRepo.getAppSettings(DEFAULT_SETTINGS);
+    const rankProfile = this.rankProfileForSession(sessionId, settings);
     const casualMode = isCasualReviewMode(match.game);
     const fallbackRole = !casualMode && settings.mainRole && settings.mainRole !== "unknown" ? settings.mainRole : undefined;
     const detectedRole = match.player.role && match.player.role !== "unknown" ? match.player.role : undefined;
@@ -348,11 +462,20 @@ export class ReportCoordinator {
       rawLiveData: buildRawLiveDataTelemetry({ snapshots: snapshotRows, events, player: match.player }),
       player: {
         ...match.player,
-        rank: settings.playerRank ?? match.player.rank,
+        rank: rankProfile.rank ?? match.player.rank,
         role: casualMode ? "unknown" : detectedRole ?? fallbackRole ?? match.player.role,
         roleSource: casualMode ? "casual game mode" : detectedRole ? match.player.roleSource : fallbackRole ? "fallback profile" : match.player.roleSource,
         roleConfidence: casualMode ? 0 : detectedRole ? match.player.roleConfidence : fallbackRole ? 0.25 : match.player.roleConfidence
       }
+    };
+  }
+
+  private rankProfileForSession(sessionId: string, settings: AppSettings): { rank?: string; lp?: number } {
+    const snapshot = this.rankSnapshots.getForSession(sessionId, "after")
+      ?? this.rankSnapshots.getForSession(sessionId, "before");
+    return {
+      rank: snapshot?.rank ?? settings.playerRank,
+      lp: snapshot?.lp ?? settings.playerLp
     };
   }
 
@@ -434,135 +557,13 @@ function createVisualOnlySnapshot(params: {
 }
 
 function isVisualOnlyReview(match: MatchContext): boolean {
-  return match.game?.gameMode === "VOD_REVIEW" || match.game?.gameMode === "ROFL_REPLAY";
+  if (match.game?.gameMode === "VOD_REVIEW") return true;
+  if (match.game?.gameMode !== "ROFL_REPLAY") return false;
+  return match.snapshots.length === 0 || match.player.championName === "Unknown champion";
 }
 
 function isRoflReplayFile(filePath: string): boolean {
   return extname(filePath).toLowerCase() === ".rofl";
-}
-
-interface RoflLaunchResult {
-  executablePath?: string;
-  warnings: string[];
-  launched: boolean;
-  needsManualOpen: boolean;
-}
-
-async function launchRoflReplay(replayPath: string): Promise<RoflLaunchResult> {
-  const executablePath = findLeagueGameExecutable();
-  if (!executablePath) {
-    return {
-      warnings: [
-        "Could not find League of Legends.exe for ROFL playback. Set RIFTCOACH_LEAGUE_EXE to the Game\\League of Legends.exe path, or install League in the default Riot Games location."
-      ],
-      launched: false,
-      needsManualOpen: true
-    };
-  }
-
-  const warnings: string[] = [];
-  try {
-    await launchDetached(executablePath, [replayPath], dirname(executablePath));
-    warnings.push(`Launched ROFL replay with League game executable: ${executablePath}`);
-    return { executablePath, warnings, launched: true, needsManualOpen: false };
-  } catch (error) {
-    warnings.push(`Direct League launch failed: ${formatProviderError(error)}`);
-  }
-
-  try {
-    await launchWithWindowsStartProcess(executablePath, replayPath);
-    warnings.push(`Launched ROFL replay through Windows Start-Process fallback: ${executablePath}`);
-    return { executablePath, warnings, launched: true, needsManualOpen: false };
-  } catch (error) {
-    warnings.push(`Windows Start-Process fallback failed: ${formatProviderError(error)}`);
-  }
-
-  warnings.push(
-    `Could not launch ROFL replay with League executable "${executablePath}". Open the replay manually in the League client while RiftCoach waits for the Replay API.`
-  );
-  return { executablePath, warnings, launched: false, needsManualOpen: true };
-}
-
-function findLeagueGameExecutable(): string | undefined {
-  const candidates = [
-    process.env.RIFTCOACH_LEAGUE_EXE,
-    "C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe",
-    process.env.SystemDrive ? `${process.env.SystemDrive}\\Riot Games\\League of Legends\\Game\\League of Legends.exe` : undefined,
-    process.env.ProgramFiles ? `${process.env.ProgramFiles}\\Riot Games\\League of Legends\\Game\\League of Legends.exe` : undefined,
-    process.env["ProgramFiles(x86)"] ? `${process.env["ProgramFiles(x86)"]}\\Riot Games\\League of Legends\\Game\\League of Legends.exe` : undefined
-  ];
-
-  return candidates
-    .map((candidate) => candidate?.trim())
-    .filter((candidate): candidate is string => Boolean(candidate))
-    .find((candidate) => existsSync(candidate));
-}
-
-function launchDetached(command: string, args: string[], cwd: string): Promise<void> {
-  return new Promise((resolveLaunch, rejectLaunch) => {
-    let settled = false;
-    const child = spawn(command, args, {
-      cwd,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: false
-    });
-
-    child.once("spawn", () => {
-      if (settled) return;
-      settled = true;
-      child.unref();
-      resolveLaunch();
-    });
-    child.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      rejectLaunch(error);
-    });
-  });
-}
-
-function launchWithWindowsStartProcess(executablePath: string, replayPath: string): Promise<void> {
-  const command = [
-    "$ErrorActionPreference = 'Stop'",
-    "Start-Process -FilePath $env:RIFTCOACH_LEAGUE_EXE -ArgumentList @($env:RIFTCOACH_ROFL_PATH) -WorkingDirectory $env:RIFTCOACH_LEAGUE_CWD"
-  ].join("; ");
-
-  return new Promise((resolveLaunch, rejectLaunch) => {
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-      {
-        windowsHide: true,
-        env: {
-          ...process.env,
-          RIFTCOACH_LEAGUE_EXE: executablePath,
-          RIFTCOACH_ROFL_PATH: replayPath,
-          RIFTCOACH_LEAGUE_CWD: dirname(executablePath)
-        }
-      }
-    );
-    let stderr = "";
-    let settled = false;
-
-    child.stderr?.on("data", (chunk) => {
-      stderr += Buffer.from(chunk).toString("utf8");
-    });
-    child.once("error", (error) => {
-      if (settled) return;
-      settled = true;
-      rejectLaunch(error);
-    });
-    child.once("close", (code) => {
-      if (settled) return;
-      settled = true;
-      if (code === 0) {
-        resolveLaunch();
-        return;
-      }
-      rejectLaunch(new Error(`powershell.exe exited with code ${code}: ${stderr.slice(0, 500)}`));
-    });
-  });
 }
 
 function replayMapName(game?: RiotReplayGame): string {
@@ -616,6 +617,46 @@ function replayApiEvidence(params: {
   }
 
   return evidence;
+}
+
+async function renderReplayVideo(input: {
+  replayClient: ReplayClient;
+  outputRoot: string;
+  sessionId: string;
+  durationSec: number;
+}): Promise<string> {
+  const outputDirectory = join(input.outputRoot, "rofl-recordings", input.sessionId);
+  await mkdir(outputDirectory, { recursive: true });
+  await input.replayClient.updatePlayback({ time: 0, paused: false, speed: 1 });
+  await input.replayClient.updateRecording({
+    recording: true,
+    path: outputDirectory,
+    codec: "webm",
+    startTime: 0,
+    endTime: input.durationSec,
+    framesPerSecond: 30,
+    enforceFrameRate: true,
+    replaySpeed: 1,
+    lossless: false
+  });
+
+  const deadline = Date.now() + Math.max(5 * 60_000, Math.min(2 * 60 * 60_000, input.durationSec * 4_000));
+  let latestPath: string | undefined;
+  while (Date.now() < deadline) {
+    const recording = await input.replayClient.readRecording();
+    if (recording.path) latestPath = resolve(recording.path);
+    if (recording.recording === false) break;
+    await delay(1_000);
+  }
+
+  if (latestPath && existsSync(latestPath) && (await stat(latestPath)).isFile()) return latestPath;
+  const candidates = (await readdir(outputDirectory))
+    .filter((entry) => extname(entry).toLowerCase() === ".webm")
+    .map((entry) => join(outputDirectory, entry));
+  const files = await Promise.all(candidates.map(async (filePath) => ({ filePath, modifiedAt: (await stat(filePath)).mtimeMs })));
+  const newest = files.sort((left, right) => right.modifiedAt - left.modifiedAt)[0]?.filePath;
+  if (!newest) throw new Error("The Replay API finished without returning a WebM file.");
+  return newest;
 }
 
 async function waitForReplayPlayback(replayClient: ReplayClient, timeoutMs: number): Promise<RiotReplayPlayback> {

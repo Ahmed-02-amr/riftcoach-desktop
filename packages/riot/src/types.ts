@@ -42,6 +42,22 @@ export interface RiotReplayRender {
   [key: string]: unknown;
 }
 
+export interface RiotReplayRecording {
+  recording?: boolean;
+  path?: string;
+  codec?: "webm" | "png" | string;
+  startTime?: number;
+  endTime?: number;
+  currentTime?: number;
+  width?: number;
+  height?: number;
+  framesPerSecond?: number;
+  enforceFrameRate?: boolean;
+  replaySpeed?: number;
+  lossless?: boolean;
+  [key: string]: unknown;
+}
+
 export interface RiotReplayHealth {
   reachable: boolean;
   playback?: RiotReplayPlayback;

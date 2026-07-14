@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { AppSettings, JournalEntry } from "../types";
+import { formatChampionName } from "@riftcoach/core";
+import type { AppSettings, JournalEntry, RankSyncStatus } from "../types";
 import { formatDate } from "../utils";
 import { Icon } from "./Icon";
 
@@ -11,10 +12,14 @@ type Signal = { title: string; detail: string; count: number };
 export function JournalView({
   entries,
   settings,
+  rankStatus,
+  onSyncRank,
   onUpdateProfile
 }: {
   entries: JournalEntry[];
   settings: AppSettings;
+  rankStatus: RankSyncStatus;
+  onSyncRank: () => Promise<void>;
   onUpdateProfile: (rank: string, lp: number) => Promise<void>;
 }) {
   const [editingRank, setEditingRank] = useState(false);
@@ -23,9 +28,15 @@ export function JournalView({
   const [saving, setSaving] = useState(false);
   const strengths = useMemo(() => aggregateSignals(entries, "strength"), [entries]);
   const weaknesses = useMemo(() => aggregateSignals(entries, "weakness"), [entries]);
-  const rankPoints = useMemo(() => [...entries].reverse().filter((entry) => entry.rank && entry.lp !== undefined).slice(-8), [entries]);
-  const currentRank = settings.playerRank ?? entries[0]?.rank ?? "Unranked";
-  const currentLp = settings.playerLp ?? entries[0]?.lp;
+  const rankPoints = useMemo(
+    () => [...entries].reverse()
+      .filter((entry) => (!entry.rankQueue || entry.rankQueue === settings.rankQueue) && entry.rank && entry.rank !== "Unranked" && entry.lp !== undefined)
+      .slice(-8),
+    [entries, settings.rankQueue]
+  );
+  const syncedSnapshot = rankStatus.snapshot?.queueType === settings.rankQueue ? rankStatus.snapshot : undefined;
+  const currentRank = syncedSnapshot?.rank ?? settings.playerRank ?? entries[0]?.rank ?? "Rank not set";
+  const currentLp = syncedSnapshot?.lp ?? settings.playerLp ?? entries[0]?.lp;
   const firstPoint = rankPoints[0];
   const lastPoint = rankPoints.at(-1);
   const delta = firstPoint && lastPoint ? rankValue(lastPoint.rank, lastPoint.lp) - rankValue(firstPoint.rank, firstPoint.lp) : 0;
@@ -52,16 +63,25 @@ export function JournalView({
             <h2>{currentRank}</h2>
             <strong>{currentLp === undefined ? "LP not set" : `${currentLp} LP`}</strong>
             {rankPoints.length > 1 && <p className={delta >= 0 ? "rank-gain" : "rank-loss"}>{delta >= 0 ? "+" : ""}{delta} LP across tracked reviews</p>}
+            <p className={`rank-sync-meta rank-sync-${rankStatus.state}`}>
+              <span aria-hidden="true" />
+              {rankStatusText(rankStatus, settings.rankQueue)}
+            </p>
           </div>
-          <button className="secondary icon-button rank-edit-button" onClick={() => setEditingRank((value) => !value)}>
-            <Icon name="trend" size={17} /> Update rank
-          </button>
+          <div className="rank-actions">
+            <button className="secondary icon-button" disabled={!settings.automaticRankSync || rankStatus.state === "syncing"} onClick={() => void onSyncRank()}>
+              <Icon name="refresh" size={17} /> {rankStatus.state === "syncing" ? "Syncing" : "Sync now"}
+            </button>
+            <button className="secondary icon-button" onClick={() => setEditingRank((value) => !value)}>
+              <Icon name="trend" size={17} /> Manual fallback
+            </button>
+          </div>
           {editingRank && (
             <form className="rank-editor" onSubmit={(event) => { event.preventDefault(); void saveRank(); }}>
               <label>Rank<input value={rankDraft} onChange={(event) => setRankDraft(event.target.value)} placeholder="Gold I" /></label>
               <label>LP<input type="number" min={0} max={100} value={lpDraft} onChange={(event) => setLpDraft(Number(event.target.value))} /></label>
-              <button type="submit" disabled={saving || !rankDraft.trim()}>{saving ? "Saving" : "Save snapshot"}</button>
-              <p>Your next completed review records this rank and LP in the journal.</p>
+              <button type="submit" disabled={saving || !rankDraft.trim()}>{saving ? "Saving" : "Save fallback"}</button>
+              <p>This value is used only when automatic League Client sync is disabled or unavailable.</p>
             </form>
           )}
         </div>
@@ -85,20 +105,29 @@ export function JournalView({
           <div className="journal-empty">
             <Icon name="journal" size={34} />
             <h3>Your journal starts with the next review</h3>
-            <p>Every completed review will add one strength, one focus area, and the rank snapshot configured above.</p>
+            <p>Every completed review will add one strength, one focus area, and an automatically synchronized rank snapshot.</p>
           </div>
         ) : (
           <div className="journal-rows">
             <div className="journal-table-head"><span>Match</span><span>Role / date</span><span>Strength</span><span>Focus area</span><span>Rank / LP</span></div>
-            {entries.slice(0, 12).map((entry) => (
-              <article className="journal-row" key={entry.id}>
-                <div className="journal-match"><span className="champion-mark">{initials(entry.champion)}</span><div><strong>{entry.champion ?? "Unknown champion"}</strong><small>Review saved</small></div></div>
-                <div><strong>{roleLabel(entry.role)}</strong><small>{formatDate(entry.createdAtIso)}</small></div>
-                <div className="journal-signal positive"><span><Icon name="strength" size={17} /></span><strong>{entry.strengthTitle}</strong></div>
-                <div className="journal-signal negative"><span><Icon name="focus" size={17} /></span><strong>{entry.weaknessTitle}</strong></div>
-                <div className="journal-rank"><strong>{entry.lp === undefined ? "—" : `${entry.lp} LP`}</strong><small>{entry.rank ?? "Unranked"}</small></div>
-              </article>
-            ))}
+            {entries.slice(0, 12).map((entry) => {
+              const champion = formatChampionName(entry.champion);
+              const hasRankSnapshot = Boolean(entry.rank) || entry.lp !== undefined;
+              return (
+                <article className="journal-row" key={entry.id}>
+                  <div className="journal-match"><span className="champion-mark">{initials(champion)}</span><div><strong>{champion}</strong><small>Review saved</small></div></div>
+                  <div><strong>{roleLabel(entry.role)}</strong><small>{formatDate(entry.createdAtIso)}</small></div>
+                  <div className="journal-signal positive"><span><Icon name="strength" size={17} /></span><strong>{entry.strengthTitle}</strong></div>
+                  <div className="journal-signal negative"><span><Icon name="focus" size={17} /></span><strong>{entry.weaknessTitle}</strong></div>
+                  {hasRankSnapshot
+                    ? <div className="journal-rank">
+                        <strong>{entry.lp === undefined ? "LP not set" : `${entry.lp} LP`}{entry.lpDelta !== undefined && entry.lpDelta !== 0 ? <em className={entry.lpDelta > 0 ? "rank-gain" : "rank-loss"}>{entry.lpDelta > 0 ? "+" : ""}{entry.lpDelta}</em> : null}</strong>
+                        <small>{entry.rank ?? "Rank not set"}{entry.rankQueue ? ` · ${queueLabel(entry.rankQueue)}` : ""}</small>
+                      </div>
+                    : <div className="journal-rank journal-rank-empty"><small>Not tracked</small></div>}
+                </article>
+              );
+            })}
           </div>
         )}
       </section>
@@ -122,7 +151,7 @@ function SignalRail({ title, tone, signals, total }: { title: string; tone: "str
 }
 
 function RankChart({ points }: { points: JournalEntry[] }) {
-  if (points.length === 0) return <div className="chart-empty"><Icon name="trend" size={28} /><span>Add your rank, then complete a review to start the trend.</span></div>;
+  if (points.length === 0) return <div className="chart-empty"><Icon name="trend" size={28} /><span>Leave RiftCoach running for a ranked match to start the automatic trend.</span></div>;
   const width = 760;
   const height = 220;
   const inset = { top: 26, right: 24, bottom: 42, left: 82 };
@@ -177,6 +206,32 @@ function formatRankScore(value: number): string {
   const division = DIVISIONS[Math.min(3, Math.floor(withinTier / 100))];
   const lp = Math.max(0, Math.min(99, Math.round(withinTier % 100)));
   return `${TIERS[tierIndex]} ${division} · ${lp}`;
+}
+
+function rankStatusText(status: RankSyncStatus, queueType: AppSettings["rankQueue"]): string {
+  const queue = queueLabel(queueType);
+  const snapshot = status.snapshot?.queueType === queueType ? status.snapshot : undefined;
+  if (status.state === "syncing") return `${queue} · syncing from League Client`;
+  if (status.state === "disabled") return `${queue} · automatic sync disabled`;
+  if (status.state === "client-not-running") {
+    return snapshot ? `${queue} · League closed · last synced ${relativeTime(snapshot.syncedAtIso)}` : `${queue} · open League to sync`;
+  }
+  if (status.state === "error") return `${queue} · sync needs attention`;
+  if (snapshot) return `${queue} · synced from League ${relativeTime(snapshot.syncedAtIso)}`;
+  return `${queue} · waiting for League Client`;
+}
+
+function queueLabel(queueType: AppSettings["rankQueue"]): string {
+  return queueType === "RANKED_FLEX_SR" ? "Flex" : "Solo / Duo";
+}
+
+function relativeTime(iso: string): string {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 15) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
 }
 
 function initials(value?: string): string {

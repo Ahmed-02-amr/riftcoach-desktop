@@ -5,8 +5,10 @@ import { nanoid } from "nanoid";
 import { DEFAULT_SETTINGS, normalizeEvents, normalizeLiveData, nowIso, type AppSettings } from "@riftcoach/core";
 import { LiveClientReader } from "@riftcoach/riot";
 import { EventRepository, SessionRepository, SettingsRepository, SnapshotRepository, VisualRepository } from "@riftcoach/storage";
+import type { GameRecordingService, GameRecordingStatus } from "./game-recording-service";
 import type { ScreenshotService } from "./screenshot-service";
 import type { ReportCoordinator } from "./report-coordinator";
+import type { RankSyncService } from "./rank-sync-service";
 
 export interface LiveSessionStatus {
   state: "idle" | "recording" | "league-not-running" | "error";
@@ -14,6 +16,7 @@ export interface LiveSessionStatus {
   gameTimeSec?: number;
   snapshotsRecorded: number;
   lastError?: string;
+  vodRecording: GameRecordingStatus;
   updatedAtIso: string;
 }
 
@@ -22,6 +25,8 @@ interface LiveSessionServiceOptions {
   settingsRepo: SettingsRepository;
   screenshotService: ScreenshotService;
   reportCoordinator: ReportCoordinator;
+  gameRecordingService: GameRecordingService;
+  rankSyncService: RankSyncService;
 }
 
 export class LiveSessionService extends EventEmitter {
@@ -35,9 +40,11 @@ export class LiveSessionService extends EventEmitter {
   private snapshotsRecorded = 0;
   private lastScreenshotAtSec = -Infinity;
   private manualStopped = false;
+  private recordingAttemptedSessionId: string | undefined;
   private currentStatus: LiveSessionStatus = {
     state: "league-not-running",
     snapshotsRecorded: 0,
+    vodRecording: { state: "disabled" },
     updatedAtIso: nowIso()
   };
 
@@ -75,6 +82,7 @@ export class LiveSessionService extends EventEmitter {
       ...this.currentStatus,
       sessionId: this.activeSessionId ?? this.currentStatus.sessionId,
       snapshotsRecorded: this.snapshotsRecorded,
+      vodRecording: this.vodStatus(),
       updatedAtIso: nowIso()
     };
   }
@@ -103,7 +111,7 @@ export class LiveSessionService extends EventEmitter {
     }
 
     try {
-      const sessionId = this.activeSessionId ?? this.createSession(liveData);
+      const sessionId = this.activeSessionId ?? await this.createSession(liveData);
       const snapshot = normalizeLiveData(sessionId, liveData);
       const events = normalizeEvents(liveData);
       this.snapshots.insert(sessionId, snapshot, liveData);
@@ -111,6 +119,7 @@ export class LiveSessionService extends EventEmitter {
       this.snapshotsRecorded += 1;
 
       await this.maybeCaptureScreenshot(sessionId, snapshot.timestampSec);
+      await this.maybeStartGameRecording(sessionId, snapshot.timestampSec);
 
       this.emitStatus({
         state: "recording",
@@ -123,7 +132,7 @@ export class LiveSessionService extends EventEmitter {
     }
   }
 
-  private createSession(liveData: any): string {
+  private async createSession(liveData: any): Promise<string> {
     const settings = this.settings();
     const sessionId = nanoid(12);
     const snapshot = normalizeLiveData(sessionId, liveData);
@@ -138,6 +147,8 @@ export class LiveSessionService extends EventEmitter {
     this.activeSessionId = sessionId;
     this.snapshotsRecorded = 0;
     this.lastScreenshotAtSec = -Infinity;
+    this.recordingAttemptedSessionId = undefined;
+    await this.options.rankSyncService.captureBeforeMatch(sessionId);
     log.info(`Started local session ${sessionId}`);
     return sessionId;
   }
@@ -145,11 +156,36 @@ export class LiveSessionService extends EventEmitter {
   private async finishSession(sessionId: string): Promise<void> {
     this.sessions.end(sessionId, nowIso());
     this.activeSessionId = undefined;
+    const rankCapture = this.options.rankSyncService.captureAfterMatch(sessionId);
+    const recording = await this.options.gameRecordingService.stop(sessionId).catch((error) => {
+      log.error("League VOD finalization failed", error);
+      return undefined;
+    });
+    if (recording) {
+      await this.options.reportCoordinator.importVodForSession(sessionId, recording.filePath, {
+        videoStartOffsetSec: -recording.startedAtGameTimeSec
+      }).catch((error) => log.error("automatic League VOD import failed", error));
+    }
+    log.info(`Finished local session ${sessionId}`);
+    await this.options.reportCoordinator.generateForSession(sessionId).catch((error) => log.error("auto report generation failed", error));
+    const finalRank = await rankCapture.catch((error) => {
+      log.error("automatic post-match rank capture failed", error);
+      return undefined;
+    });
+    if (finalRank) this.options.reportCoordinator.updateJournalRank(sessionId, finalRank);
     this.snapshotsRecorded = 0;
     this.lastScreenshotAtSec = -Infinity;
+    this.recordingAttemptedSessionId = undefined;
     this.emitStatus({ state: "league-not-running" });
-    log.info(`Finished local session ${sessionId}`);
-    void this.options.reportCoordinator.generateForSession(sessionId).catch((error) => log.error("auto report generation failed", error));
+  }
+
+  private async maybeStartGameRecording(sessionId: string, timestampSec: number): Promise<void> {
+    const settings = this.settings();
+    if (!settings.recordLiveMatches || this.recordingAttemptedSessionId === sessionId) return;
+    this.recordingAttemptedSessionId = sessionId;
+    await this.options.gameRecordingService.start(sessionId, timestampSec, settings.liveRecordingFps).catch((error) => {
+      log.warn("League-window VOD capture could not start", error);
+    });
   }
 
   private async maybeCaptureScreenshot(sessionId: string, timestampSec: number): Promise<void> {
@@ -174,10 +210,15 @@ export class LiveSessionService extends EventEmitter {
       gameTimeSec: partial.gameTimeSec,
       snapshotsRecorded: this.snapshotsRecorded,
       lastError: partial.lastError,
+      vodRecording: this.vodStatus(),
       updatedAtIso: nowIso()
     };
     this.currentStatus = status;
     this.emit("status", status);
+  }
+
+  private vodStatus(): GameRecordingStatus {
+    return this.settings().recordLiveMatches ? this.options.gameRecordingService.getStatus() : { state: "disabled" };
   }
 }
 

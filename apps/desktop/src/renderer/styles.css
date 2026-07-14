@@ -205,6 +205,8 @@ main { padding: 30px; overflow: auto; }
   margin-bottom: 16px;
 }
 .system-banner { display: flex; gap: 14px; align-items: flex-start; }
+.system-banner > div { flex: 1; min-width: 0; }
+.system-banner code { display: block; margin-top: 8px; overflow-wrap: anywhere; }
 .system-banner strong { display: block; margin-bottom: 4px; }
 .system-banner p { margin: 0; color: #cbd7ea; line-height: 1.55; }
 .system-banner.amber { border-color: rgba(247, 185, 85, 0.32); background: rgba(247, 185, 85, 0.1); }
@@ -328,7 +330,7 @@ main { padding: 30px; overflow: auto; }
 .button-row.centered { justify-content: center; }
 .button-row.compact { margin-top: 0; }
 .section-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-.status-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.status-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .status-summary > div { padding: 14px; border-radius: 15px; background: rgba(0,0,0,0.16); border: 1px solid var(--border); }
 .status-summary span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .status-summary strong { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -781,7 +783,12 @@ main { padding: 26px 28px 34px; min-width: 0; }
 .rank-summary p { margin: 5px 0 0; font-size: 12px; }
 .rank-gain { color: #3addc8; }
 .rank-loss { color: #ff6d67; }
-.rank-edit-button { grid-column: 1 / -1; justify-self: start; margin-top: 2px; }
+.rank-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; justify-self: start; margin-top: 5px; }
+.rank-sync-meta { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.rank-sync-meta > span { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #687b86; box-shadow: 0 0 0 3px rgba(104, 123, 134, .1); }
+.rank-sync-synced > span, .rank-sync-unranked > span { background: #31d3bd; box-shadow: 0 0 0 3px rgba(49, 211, 189, .12); }
+.rank-sync-syncing > span { background: #d6ad59; box-shadow: 0 0 0 3px rgba(214, 173, 89, .12); }
+.rank-sync-error > span { background: #ff6d67; box-shadow: 0 0 0 3px rgba(255, 109, 103, .12); }
 .rank-editor { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0,1fr) 90px auto; gap: 8px; align-items: end; padding-top: 12px; border-top: 1px solid rgba(151, 121, 69, .22); }
 .rank-editor input { margin-top: 5px; }
 .rank-editor p { grid-column: 1 / -1; color: var(--muted); }
@@ -834,7 +841,10 @@ main { padding: 26px 28px 34px; min-width: 0; }
 .journal-signal strong { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .journal-rank { border-left: 1px solid rgba(138, 112, 67, .23); padding-left: 14px; }
 .journal-rank strong { font-size: 16px; }
+.journal-rank strong { display: flex; align-items: baseline; gap: 8px; }
+.journal-rank strong em { font-family: "Segoe UI", sans-serif; font-size: 11px; font-style: normal; font-weight: 800; }
 .journal-rank small { color: #dab365; text-transform: uppercase; letter-spacing: .06em; }
+.journal-rank-empty small { color: var(--muted); text-transform: none; letter-spacing: 0; }
 .journal-empty { min-height: 210px; display: grid; place-items: center; align-content: center; text-align: center; color: var(--muted); }
 .journal-empty svg { color: var(--gold); }
 .journal-empty h3 { margin: 12px 0 4px; color: var(--text); }
@@ -845,7 +855,7 @@ main { padding: 26px 28px 34px; min-width: 0; }
   .rank-summary { grid-template-columns: 62px minmax(0,1fr) auto; border-right: 0; border-bottom: 1px solid rgba(127, 105, 67, .24); align-items: center; }
   .rank-summary > .rank-crest { grid-column: 1; grid-row: 1; }
   .rank-summary > div:nth-child(2) { grid-column: 2; grid-row: 1; }
-  .rank-edit-button { grid-column: 3; grid-row: 1; justify-self: end; }
+  .rank-actions { grid-column: 3; grid-row: 1; justify-self: end; justify-content: flex-end; }
   .rank-editor { grid-column: 1 / -1; }
 }
 
@@ -869,7 +879,7 @@ main { padding: 26px 28px 34px; min-width: 0; }
   .journal-signal { grid-column: auto; }
   .journal-rank { border-left: 0; padding-left: 0; }
   .rank-summary { grid-template-columns: 58px minmax(0,1fr); }
-  .rank-edit-button { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
+  .rank-actions { grid-column: 1 / -1; grid-row: 2; justify-self: start; justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {

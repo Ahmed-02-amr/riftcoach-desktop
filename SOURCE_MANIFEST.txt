@@ -1,6 +1,14 @@
-RiftCoach Desktop Source v0.4.0
+RiftCoach Desktop Source v0.4.3
 
 Core fixes in this release:
+- Added keyless League Client Rank/LP sync with match-specific before/after snapshots and LP deltas.
+- Added separate Solo/Duo and Flex tracking, automatic post-match retries, and manual offline fallback.
+- Prevented ROFL import/telemetry status from appearing as a Journal strength.
+- Constrained final-stat-only reviews to supported scoreboard claims and repaired existing entries on load.
+- Added champion display-name formatting, match-time journal dates, and a clean untracked-rank state.
+- Added offline ROFL/ROFL2 metadata parsing so replay reviews no longer require League playback.
+- Added one-click, backed-up `EnableReplayApi=1` setup for optional replay frames and WebM rendering.
+- Added optional Riot Match-v5 timelines and opt-in League-window VOD recording.
 - Replaced Training Objectives with an automatic post-game Journal.
 - Added per-review strength, focus-area, rank, and LP snapshots with ranked progress visualization.
 - Backfills existing reports into journal history while preserving legacy tables for upgrade safety.
@@ -11,6 +19,6 @@ Main areas:
 - apps/desktop: Electron + React desktop application.
 - apps/api: optional OpenAI proxy backend.
 - packages/core: normalized game state, role inference, rules engine, knowledge context, schemas, journal/profile types, visual observations.
-- packages/riot: local Riot Live Client Data reader.
+- packages/riot: local Live Client/Replay API readers, offline ROFL parser, and optional Match-v5 client.
 - packages/storage: SQLite persistence.
 - packages/ai: Ollama/OpenAI provider abstraction.

@@ -54,6 +54,10 @@ pnpm build
 pnpm --filter @riftcoach/desktop dev
 ```
 
+## v0.4.5 Reliable visual bookmarks
+
+League VOD capture now uses DirectX Desktop Duplication cropped to the League window, which avoids the black frames produced by legacy GDI capture on the hardware-accelerated game surface. Blank extracted frames are rejected, older affected reports substitute the nearest healthy periodic match screenshot, and the UI shows one clearly labeled manual bookmark per moment instead of duplicating unverified pixel-scan claims.
+
 ## v0.4.4 Evidence-grounded reviews
 
 RiftCoach now distinguishes replay navigation bookmarks and coarse pixel statistics from verified visual understanding. Bookmark-only frames cannot be promoted into claims about wave state, positioning, camera focus, or why a fight happened. Riot kill events that omit the player's `#tag` are matched correctly, timelines use exact telemetry rather than inferred causality, local file paths are removed from evidence, and existing affected reviews are repaired when they load.
@@ -78,7 +82,7 @@ Build the versioned Windows installer with:
 pnpm --filter @riftcoach/desktop dist:win
 ```
 
-The output uses the current package version, for example `apps/desktop/release/RiftCoach-0.4.4-Setup.exe`.
+The output uses the current package version, for example `apps/desktop/release/RiftCoach-0.4.5-Setup.exe`.
 
 If `pnpm` is not available, install it without Corepack admin shims:
 

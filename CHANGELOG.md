@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5
+
+- Replaced legacy GDI League-window recording with a DirectX Desktop Duplication capture cropped to the League window, fixing black recordings from the hardware-accelerated game surface without adding a full-desktop fallback.
+- Rejects blank or near-black extracted frames during VOD import and filters previously saved blank frames when old reports load.
+- Falls back to the nearest healthy periodic match screenshot when an older VOD bookmark points to a rejected black frame.
+- Removed untrustworthy local pixel-scan and minimap-brightness cards; captured images are now clearly labeled as manual bookmarks unless a visual observation was explicitly verified.
+- Collapsed duplicate visual cards into one frame per moment and clarified the match timeline/visual-bookmark labels.
+- Added regression coverage for DirectX capture bounds, black-frame fallback, duplicate scan suppression, and verified visual observations.
+
 ## 0.4.4
 
 - Separated timestamp bookmarks, coarse pixel scans, parsed telemetry, and verified visual observations so only verified image evidence can influence coaching.

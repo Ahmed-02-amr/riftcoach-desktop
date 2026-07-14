@@ -238,6 +238,7 @@ export interface VisualObservation {
   title: string;
   details: string;
   evidence: string[];
+  evidenceKind?: "bookmark" | "pixel-scan" | "verified" | "telemetry";
 }
 
 export interface VodImportResult {

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, unlink } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { nativeImage } from "electron";
 import { nanoid } from "nanoid";
@@ -45,6 +45,7 @@ export class VisualReviewService {
   private readonly repo: VisualRepository;
   private readonly vodDirectory: string;
   private readonly screenshotDirectory: string;
+  private readonly frameUsability = new Map<string, boolean>();
 
   constructor(options: VisualReviewServiceOptions) {
     this.repo = new VisualRepository(options.db);
@@ -53,7 +54,7 @@ export class VisualReviewService {
   }
 
   async createBookmarkObservations(match: MatchContext): Promise<VisualObservation[]> {
-    const frames = this.repo.listFrames(match.sessionId);
+    const frames = this.listFrames(match.sessionId);
     const existing = this.repo.listObservations(match.sessionId);
     const existingKeys = new Set(existing.map((obs) => `${obs.frameId ?? ""}:${obs.category}:${Math.round(obs.timestampSec)}`));
     const observations: VisualObservation[] = [];
@@ -114,6 +115,11 @@ export class VisualReviewService {
 
       try {
         await this.extractFrame(vodPath, outputPath, item.videoTimestampSec);
+        if (!hasUsableImageContent(outputPath)) {
+          warnings.push(`Skipped blank VOD frame at ${formatTime(item.videoTimestampSec)}. Windows capture did not contain visible League pixels.`);
+          await unlink(outputPath).catch(() => undefined);
+          continue;
+        }
         const size = readImageSize(outputPath);
         const frame: ScreenshotFrame = {
           id: frameId,
@@ -141,22 +147,15 @@ export class VisualReviewService {
         this.repo.saveObservation(obs);
         frames.push(frame);
         observations.push(obs);
-        try {
-          const localObservations = this.analyzeFrame(frame, item);
-          for (const localObservation of localObservations) {
-            this.repo.saveObservation(localObservation);
-            observations.push(localObservation);
-          }
-        } catch (error) {
-          warnings.push(`Local frame analysis skipped for ${formatTime(item.videoTimestampSec)}: ${formatError(error)}`);
-        }
       } catch (error) {
         warnings.push(`Could not extract ${formatTime(item.videoTimestampSec)} (${item.title}): ${formatError(error)}`);
       }
     }
 
     if (frames.length === 0) {
-      throw new Error(`VOD import failed before any frames were extracted. ${warnings.at(-1) ?? ""}`.trim());
+      throw new Error(
+        `VOD import did not contain any visible frames. RiftCoach will keep the healthy periodic match screenshots instead. ${warnings.at(-1) ?? ""}`.trim()
+      );
     }
 
     const result: VodImportResult = {
@@ -175,7 +174,13 @@ export class VisualReviewService {
   }
 
   listFrames(sessionId: string): ScreenshotFrame[] {
-    return this.repo.listFrames(sessionId);
+    return this.repo.listFrames(sessionId).filter((frame) => {
+      const cached = this.frameUsability.get(frame.filePath);
+      if (cached !== undefined) return cached;
+      const usable = hasUsableImageContent(frame.filePath);
+      this.frameUsability.set(frame.filePath, usable);
+      return usable;
+    });
   }
 
   listObservations(sessionId: string): VisualObservation[] {
@@ -236,17 +241,7 @@ export class VisualReviewService {
     };
     this.repo.saveObservation(obs);
 
-    const localObservations = this.analyzeFrame(frame, {
-      timestampSec: frame.timestampSec,
-      videoTimestampSec: frame.timestampSec,
-      category,
-      confidence: obs.confidence,
-      title: obs.title,
-      details: obs.details,
-      priority: 6
-    });
-    for (const localObservation of localObservations) this.repo.saveObservation(localObservation);
-    return [obs, ...localObservations];
+    return [obs];
   }
 
   saveVodImport(result: VodImportResult): void {
@@ -301,64 +296,6 @@ export class VisualReviewService {
     );
   }
 
-  private analyzeFrame(frame: ScreenshotFrame, plan: PlannedVodFrame): VisualObservation[] {
-    const image = nativeImage.createFromPath(frame.filePath);
-    if (image.isEmpty()) return [];
-    const size = image.getSize();
-    if (size.width < 64 || size.height < 64) return [];
-
-    const bitmap = image.toBitmap();
-    const gameplay = scanRegion(bitmap, size.width, size.height, { x: 0.16, y: 0.12, width: 0.62, height: 0.58 });
-    const minimap = scanRegion(bitmap, size.width, size.height, { x: 0.78, y: 0.66, width: 0.22, height: 0.32 });
-    const hud = scanRegion(bitmap, size.width, size.height, { x: 0.18, y: 0.78, width: 0.58, height: 0.18 });
-    const category = localScanCategory(plan.category, minimap);
-    const confidence = plan.priority <= 3 ? 0.7 : 0.66;
-    const observations: VisualObservation[] = [
-      {
-        id: nanoid(12),
-        sessionId: frame.sessionId,
-        frameId: frame.id,
-        timestampSec: frame.timestampSec,
-        category,
-        confidence,
-        title: `Local ${categoryLabel(category)} scan`,
-        details:
-          `Local pixel scan found ${levelLabel(gameplay.activity)} gameplay-region activity, ` +
-          `${levelLabel(minimap.activity)} minimap-region activity, and ${levelLabel(hud.brightness)} HUD brightness. ` +
-          `${focusForCategory(category)} Treat this as a replay bookmark, not object detection.`,
-        evidence: [
-          `Frame: ${frame.filePath}`,
-          `Frame size: ${size.width}x${size.height}`,
-          `Gameplay activity: ${score(gameplay.activity)}`,
-          `Minimap activity: ${score(minimap.activity)}`,
-          `HUD brightness: ${score(hud.brightness)}`
-        ],
-        evidenceKind: "pixel-scan"
-      }
-    ];
-
-    if (minimap.brightness < 0.16 && minimap.contrast < 0.055) {
-      observations.push({
-        id: nanoid(12),
-        sessionId: frame.sessionId,
-        frameId: frame.id,
-        timestampSec: frame.timestampSec,
-        category: "vision",
-        confidence: 0.67,
-        title: "Minimap visibility check",
-        details:
-          "The minimap region was unusually dark or low-contrast in this extracted frame. Confirm whether the recording crop/overlay hides map information, then use the bookmark to review map checks before the decision.",
-        evidence: [
-          `Frame: ${frame.filePath}`,
-          `Minimap brightness: ${score(minimap.brightness)}`,
-          `Minimap contrast: ${score(minimap.contrast)}`
-        ],
-        evidenceKind: "pixel-scan"
-      });
-    }
-
-    return observations;
-  }
 }
 
 function planVodFrames(params: {
@@ -489,6 +426,16 @@ function readImageSize(filePath: string): { width: number; height: number } | un
   return size.width > 0 && size.height > 0 ? size : undefined;
 }
 
+function hasUsableImageContent(filePath: string): boolean {
+  const image = nativeImage.createFromPath(filePath);
+  if (image.isEmpty()) return false;
+  const sample = image.resize({ width: 96, quality: "good" });
+  const size = sample.getSize();
+  if (size.width < 2 || size.height < 2) return false;
+  const stats = scanRegion(sample.toBitmap(), size.width, size.height, { x: 0, y: 0, width: 1, height: 1 });
+  return stats.brightness >= 0.015 || stats.contrast >= 0.008 || stats.brightShare >= 0.001;
+}
+
 function scanRegion(
   bitmap: Buffer,
   imageWidth: number,
@@ -543,44 +490,6 @@ function scanRegion(
     darkShare: darkCount / count,
     brightShare: brightCount / count
   };
-}
-
-function localScanCategory(category: VisualObservation["category"], minimap: RegionStats): VisualObservation["category"] {
-  if (category !== "unknown") return category;
-  return minimap.activity < 0.18 ? "vision" : "positioning";
-}
-
-function categoryLabel(category: VisualObservation["category"]): string {
-  return category.replace(/_/g, " ");
-}
-
-function focusForCategory(category: VisualObservation["category"]): string {
-  switch (category) {
-    case "death_context":
-      return "Review spacing, escape routes, cooldown respect, and whether the death was already forced before the fight started.";
-    case "objective_setup":
-      return "Review reset timing, river entrance, teammate distance, and whether vision was placed before the objective window.";
-    case "wave":
-      return "Review lane state, last-hit pressure, recall timing, and whether the wave supports the next move.";
-    case "vision":
-      return "Review minimap visibility, ward coverage, and whether the decision had enough map information.";
-    case "positioning":
-      return "Review camera focus, spacing, ally distance, and whether the player walked into threat before the play was ready.";
-    case "unknown":
-    default:
-      return "Review the visible game state and choose the decision pattern that most clearly repeats.";
-  }
-}
-
-function levelLabel(value: number): string {
-  if (value >= 0.45) return "high";
-  if (value >= 0.25) return "medium";
-  if (value >= 0.12) return "low";
-  return "very low";
-}
-
-function score(value: number): string {
-  return value.toFixed(2);
 }
 
 function clamp(value: number, min: number, max: number): number {

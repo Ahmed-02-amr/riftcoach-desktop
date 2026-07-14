@@ -1,11 +1,22 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { existsSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { screen } from "electron";
 
 const requireFromHere = createRequire(__filename);
+const execFileAsync = promisify(execFile);
+const LEAGUE_WINDOW_TITLE = "League of Legends (TM) Client";
+
+export interface CaptureBounds {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+}
 
 export type GameRecordingState = "disabled" | "idle" | "starting" | "recording" | "finalizing" | "saved" | "error";
 
@@ -50,8 +61,15 @@ export class GameRecordingService {
     await mkdir(this.outputDirectory, { recursive: true });
     const filePath = join(this.outputDirectory, `${sessionId}-${Date.now()}.mkv`);
     const ffmpegPath = resolveFfmpegPath();
-    const args = buildLeagueRecordingArgs(filePath, framesPerSecond);
     this.status = { state: "starting", sessionId, filePath, startedAtGameTimeSec: gameTimeSec };
+
+    const captureBounds = await findLeagueCaptureBounds();
+    if (!captureBounds) {
+      const error = "League game window was not available on the primary display for private VOD capture. Telemetry and periodic screenshots will continue normally.";
+      this.status = { state: "error", sessionId, filePath, error };
+      throw new Error(error);
+    }
+    const args = buildLeagueRecordingArgs(filePath, framesPerSecond, captureBounds);
 
     const child = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
@@ -119,15 +137,64 @@ export class GameRecordingService {
   }
 }
 
-export function buildLeagueRecordingArgs(filePath: string, framesPerSecond: number): string[] {
+export function buildLeagueRecordingArgs(filePath: string, framesPerSecond: number, bounds: CaptureBounds): string[] {
   const fps = Math.max(10, Math.min(60, Math.round(framesPerSecond)));
+  const capture =
+    `ddagrab=framerate=${fps}:draw_mouse=0:output_fmt=bgra:` +
+    `video_size=${bounds.width}x${bounds.height}:offset_x=${bounds.offsetX}:offset_y=${bounds.offsetY}`;
   return [
     "-hide_banner", "-loglevel", "warning", "-y",
-    "-f", "gdigrab", "-framerate", String(fps), "-draw_mouse", "0",
-    "-i", "title=League of Legends (TM) Client",
+    "-f", "lavfi", "-i", capture,
+    "-vf", "hwdownload,format=bgra",
     "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-pix_fmt", "yuv420p",
     filePath
   ];
+}
+
+async function findLeagueCaptureBounds(): Promise<CaptureBounds | undefined> {
+  const script = [
+    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class RCWin32 { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport(\"user32.dll\")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'",
+    "[void][RCWin32]::SetProcessDPIAware()",
+    `$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq '${LEAGUE_WINDOW_TITLE}' } | Select-Object -First 1`,
+    "if (-not $p) { exit 2 }",
+    "$r = New-Object RCWin32+RECT",
+    "if (-not [RCWin32]::GetWindowRect($p.MainWindowHandle, [ref]$r)) { exit 3 }",
+    "@{ left=$r.Left; top=$r.Top; right=$r.Right; bottom=$r.Bottom } | ConvertTo-Json -Compress"
+  ].join("; ");
+
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 5_000 }
+    );
+    const windowBounds = JSON.parse(stdout) as { left: number; top: number; right: number; bottom: number };
+    const primary = screen.getPrimaryDisplay();
+    const scale = primary.scaleFactor || 1;
+    const primaryPhysical = {
+      left: Math.round(primary.bounds.x * scale),
+      top: Math.round(primary.bounds.y * scale),
+      right: Math.round((primary.bounds.x + primary.bounds.width) * scale),
+      bottom: Math.round((primary.bounds.y + primary.bounds.height) * scale)
+    };
+    return captureBoundsWithinPrimary(windowBounds, primaryPhysical);
+  } catch {
+    return undefined;
+  }
+}
+
+export function captureBoundsWithinPrimary(
+  windowBounds: { left: number; top: number; right: number; bottom: number },
+  primary: { left: number; top: number; right: number; bottom: number }
+): CaptureBounds | undefined {
+  const left = Math.max(windowBounds.left, primary.left);
+  const top = Math.max(windowBounds.top, primary.top);
+  const right = Math.min(windowBounds.right, primary.right);
+  const bottom = Math.min(windowBounds.bottom, primary.bottom);
+  const width = Math.floor((right - left) / 2) * 2;
+  const height = Math.floor((bottom - top) / 2) * 2;
+  if (width < 320 || height < 240) return undefined;
+  return { width, height, offsetX: left - primary.left, offsetY: top - primary.top };
 }
 
 function resolveFfmpegPath(): string {

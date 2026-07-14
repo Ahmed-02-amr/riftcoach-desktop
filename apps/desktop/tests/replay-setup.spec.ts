@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "@riftcoach/core";
 import { updateReplayApiSetting } from "../src/main/services/league-replay-service.ts";
-import { buildLeagueRecordingArgs } from "../src/main/services/game-recording-service.ts";
+import { buildLeagueRecordingArgs, captureBoundsWithinPrimary } from "../src/main/services/game-recording-service.ts";
 import { createRoflReviewData } from "../src/main/services/rofl-review-data.ts";
 import { rankedQueueForGameQueue, rankedSnapshotFromClient } from "../src/main/services/rank-sync-service.ts";
 
@@ -30,12 +30,31 @@ describe("Replay API one-click setup", () => {
 
 describe("automatic League window recording", () => {
   it("builds a League-window-only ffmpeg capture command", () => {
-    const args = buildLeagueRecordingArgs("C:\\recordings\\match.mkv", 500);
+    const args = buildLeagueRecordingArgs("C:\\recordings\\match.mkv", 500, {
+      width: 1920,
+      height: 1080,
+      offsetX: 0,
+      offsetY: 0
+    });
 
-    expect(args).toContain("gdigrab");
-    expect(args).toContain("title=League of Legends (TM) Client");
-    expect(args).toContain("60");
+    expect(args).toContain("lavfi");
+    expect(args.join(" ")).toContain("ddagrab=framerate=60");
+    expect(args.join(" ")).toContain("video_size=1920x1080");
+    expect(args.join(" ")).toContain("offset_x=0:offset_y=0");
+    expect(args.join(" ")).not.toContain("gdigrab");
     expect(args.at(-1)).toBe("C:\\recordings\\match.mkv");
+  });
+
+  it("crops capture to the League window inside the primary display", () => {
+    expect(captureBoundsWithinPrimary(
+      { left: 10, top: 20, right: 1919, bottom: 1079 },
+      { left: 0, top: 0, right: 1920, bottom: 1080 }
+    )).toEqual({ width: 1908, height: 1058, offsetX: 10, offsetY: 20 });
+
+    expect(captureBoundsWithinPrimary(
+      { left: 2200, top: 0, right: 3200, bottom: 900 },
+      { left: 0, top: 0, right: 1920, bottom: 1080 }
+    )).toBeUndefined();
   });
 });
 

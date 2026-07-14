@@ -390,6 +390,7 @@ main { padding: 30px; overflow: auto; }
 .timeline-row span { color: #9fbfff; font-variant-numeric: tabular-nums; font-weight: 900; }
 .timeline-row p { margin: 4px 0 0; color: var(--muted); }
 .metric { color: #8df1bd; font-weight: 800; }
+.visual-evidence-note { margin: -4px 0 14px; max-width: 840px; }
 .visual-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .visual-card {
   display: grid;

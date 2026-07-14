@@ -81,7 +81,7 @@ export class LeagueClientApi {
           headers: {
             Accept: "application/json",
             Authorization: `Basic ${authorization}`,
-            "User-Agent": "RiftCoachDesktop/0.4.4"
+            "User-Agent": "RiftCoachDesktop/0.4.5"
           }
         },
         (res) => {

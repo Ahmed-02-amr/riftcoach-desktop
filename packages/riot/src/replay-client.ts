@@ -68,7 +68,7 @@ export class ReplayClient {
           rejectUnauthorized: false,
           headers: {
             Accept: "application/json",
-            "User-Agent": "RiftCoachDesktop/0.4.4",
+            "User-Agent": "RiftCoachDesktop/0.4.5",
             ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {})
           }
         },

@@ -1,3 +1,5 @@
+import type { RankedQueueType } from "./rank";
+
 export type AiMode = "local-ollama" | "openai-cloud" | "hybrid";
 
 export type PrivacyMode = "local-only" | "summary-cloud" | "allow-screenshots-cloud";
@@ -9,6 +11,25 @@ export type PlayerRole = "top" | "jungle" | "mid" | "adc" | "support" | "unknown
 export type KnowledgeMode = "off" | "built-in" | "web-assisted";
 
 export type WebSearchProvider = "built-in" | "ollama-web";
+
+export type RiotPlatform =
+  | "BR1"
+  | "EUN1"
+  | "EUW1"
+  | "JP1"
+  | "KR"
+  | "LA1"
+  | "LA2"
+  | "ME1"
+  | "NA1"
+  | "OC1"
+  | "PH2"
+  | "RU"
+  | "SG2"
+  | "TH2"
+  | "TR1"
+  | "TW2"
+  | "VN2";
 
 export interface AppSettings {
   aiMode: AiMode;
@@ -23,6 +44,9 @@ export interface AppSettings {
   pollIntervalMs: number;
   captureScreenshots: boolean;
   screenshotIntervalSec: number;
+  recordLiveMatches: boolean;
+  liveRecordingFps: number;
+  renderRoflVideos: boolean;
   startOnLogin: boolean;
   minimizeToTray: boolean;
   notificationsEnabled: boolean;
@@ -34,6 +58,10 @@ export interface AppSettings {
   webSearchTimeoutMs: number;
   playerRank?: string;
   playerLp?: number;
+  automaticRankSync: boolean;
+  rankQueue: RankedQueueType;
+  riotMatchEnrichment: boolean;
+  riotPlatform: RiotPlatform;
   /** Optional fallback only. RiftCoach attempts to infer the active role from live match data first. */
   mainRole?: PlayerRole;
   riotId?: string;
@@ -52,6 +80,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pollIntervalMs: 5000,
   captureScreenshots: false,
   screenshotIntervalSec: 60,
+  recordLiveMatches: false,
+  liveRecordingFps: 20,
+  renderRoflVideos: false,
   startOnLogin: false,
   minimizeToTray: true,
   notificationsEnabled: true,
@@ -61,6 +92,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   webSearchProvider: "built-in",
   webSearchMaxResults: 4,
   webSearchTimeoutMs: 15000,
+  automaticRankSync: true,
+  rankQueue: "RANKED_SOLO_5x5",
+  riotMatchEnrichment: false,
+  riotPlatform: "NA1",
   mainRole: "unknown"
 };
 
@@ -70,6 +105,10 @@ const COACH_TONES = new Set<string>(["direct", "supportive", "analytical", "conc
 const PLAYER_ROLES = new Set<string>(["top", "jungle", "mid", "adc", "support", "unknown"]);
 const KNOWLEDGE_MODES = new Set<string>(["off", "built-in", "web-assisted"]);
 const WEB_SEARCH_PROVIDERS = new Set<string>(["built-in", "ollama-web"]);
+const RIOT_PLATFORMS = new Set<string>([
+  "BR1", "EUN1", "EUW1", "JP1", "KR", "LA1", "LA2", "ME1", "NA1", "OC1", "PH2", "RU", "SG2", "TH2", "TR1", "TW2", "VN2"
+]);
+const RANKED_QUEUE_TYPES = new Set<string>(["RANKED_SOLO_5x5", "RANKED_FLEX_SR"]);
 
 function cleanUrl(value: unknown, fallback: string): string {
   const text = typeof value === "string" ? value.trim() : "";
@@ -102,6 +141,14 @@ export function normalizeAppSettings(input?: Partial<AppSettings> | Record<strin
     typeof raw.webSearchProvider === "string" && WEB_SEARCH_PROVIDERS.has(raw.webSearchProvider)
       ? raw.webSearchProvider
       : DEFAULT_SETTINGS.webSearchProvider;
+  const riotPlatform =
+    typeof raw.riotPlatform === "string" && RIOT_PLATFORMS.has(raw.riotPlatform.toUpperCase())
+      ? raw.riotPlatform.toUpperCase()
+      : DEFAULT_SETTINGS.riotPlatform;
+  const rankQueue =
+    typeof raw.rankQueue === "string" && RANKED_QUEUE_TYPES.has(raw.rankQueue)
+      ? raw.rankQueue
+      : DEFAULT_SETTINGS.rankQueue;
 
   return {
     aiMode: aiMode as AiMode,
@@ -116,6 +163,9 @@ export function normalizeAppSettings(input?: Partial<AppSettings> | Record<strin
     pollIntervalMs: cleanPositiveNumber(raw.pollIntervalMs, DEFAULT_SETTINGS.pollIntervalMs, 1000, 60000),
     captureScreenshots: Boolean(raw.captureScreenshots),
     screenshotIntervalSec: cleanPositiveNumber(raw.screenshotIntervalSec, DEFAULT_SETTINGS.screenshotIntervalSec, 15, 600),
+    recordLiveMatches: Boolean(raw.recordLiveMatches),
+    liveRecordingFps: cleanPositiveNumber(raw.liveRecordingFps, DEFAULT_SETTINGS.liveRecordingFps, 10, 60),
+    renderRoflVideos: Boolean(raw.renderRoflVideos),
     startOnLogin: Boolean(raw.startOnLogin),
     minimizeToTray: raw.minimizeToTray === false ? false : DEFAULT_SETTINGS.minimizeToTray,
     notificationsEnabled: raw.notificationsEnabled === false ? false : DEFAULT_SETTINGS.notificationsEnabled,
@@ -125,6 +175,10 @@ export function normalizeAppSettings(input?: Partial<AppSettings> | Record<strin
     webSearchProvider: webSearchProvider as WebSearchProvider,
     webSearchMaxResults: cleanPositiveNumber(raw.webSearchMaxResults, DEFAULT_SETTINGS.webSearchMaxResults, 1, 10),
     webSearchTimeoutMs: cleanPositiveNumber(raw.webSearchTimeoutMs, DEFAULT_SETTINGS.webSearchTimeoutMs, 5000, 60000),
+    riotMatchEnrichment: Boolean(raw.riotMatchEnrichment),
+    riotPlatform: riotPlatform as RiotPlatform,
+    automaticRankSync: raw.automaticRankSync === false ? false : DEFAULT_SETTINGS.automaticRankSync,
+    rankQueue: rankQueue as RankedQueueType,
     playerRank: typeof raw.playerRank === "string" && raw.playerRank.trim() ? raw.playerRank.trim() : undefined,
     playerLp: cleanOptionalNumber(raw.playerLp, 0, 100),
     mainRole: mainRole as PlayerRole,

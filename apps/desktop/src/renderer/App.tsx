@@ -6,6 +6,8 @@ import type {
   JournalEntry,
   LiveSessionStatus,
   ProviderHealth,
+  RankSyncStatus,
+  ReplaySetupStatus,
   ScreenshotFrame,
   SessionRecord,
   VisualObservation,
@@ -38,6 +40,8 @@ export function App() {
   const [reports, setReports] = useState<CoachReport[]>([]);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [rankStatus, setRankStatus] = useState<RankSyncStatus | null>(null);
+  const [replaySetup, setReplaySetup] = useState<ReplaySetupStatus | null>(null);
   const [visualsBySession, setVisualsBySession] = useState<Record<string, VisualCache>>({});
   const [message, setMessage] = useState<string>("");
   const [bootError, setBootError] = useState<string>("");
@@ -47,19 +51,23 @@ export function App() {
 
   async function refresh() {
     try {
-      const [nextStatus, nextSettings, nextSessions, nextReports, nextJournalEntries] = await Promise.all([
+      const [nextStatus, nextRankStatus, nextSettings, nextSessions, nextReports, nextJournalEntries, nextReplaySetup] = await Promise.all([
         riftcoachApi.getStatus(),
+        riftcoachApi.getRankStatus(),
         riftcoachApi.getSettings(),
         riftcoachApi.listSessions(),
         riftcoachApi.listReports(),
-        riftcoachApi.listJournalEntries()
+        riftcoachApi.listJournalEntries(),
+        riftcoachApi.getReplaySetupStatus()
       ]);
       setBootError("");
       setStatus(nextStatus);
+      setRankStatus(nextRankStatus);
       if (!settingsDirtyRef.current) setSettings(nextSettings);
       setSessions(nextSessions);
       setReports(nextReports);
       setJournalEntries(nextJournalEntries);
+      setReplaySetup(nextReplaySetup);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       setBootError(detail);
@@ -70,9 +78,11 @@ export function App() {
   useEffect(() => {
     void refresh();
     const off = riftcoachApi.onStatusUpdate((s) => setStatus(s));
+    const offRank = riftcoachApi.onRankStatusUpdate((s) => setRankStatus(s));
     const timer = setInterval(() => void refresh(), 15000);
     return () => {
       off();
+      offRank();
       clearInterval(timer);
     };
   }, []);
@@ -155,7 +165,7 @@ export function App() {
       setTab("reports");
       const warningText = result.importResult?.warnings?.length ? ` ${result.importResult.warnings[0]}` : "";
       setMessage(
-        `VOD/ROFL review ready: ${result.importResult.frameCount} frames and ${result.importResult.observationCount} visual observations analyzed.${warningText}`
+        `VOD/ROFL review ready: ${result.importResult.frameCount} frames and ${result.importResult.observationCount} evidence observations analyzed.${warningText}`
       );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -178,7 +188,32 @@ export function App() {
     setMessage("Settings saved.");
   }
 
-  if (!settings || !status) {
+  async function enableReplayApi() {
+    try {
+      setMessage("Enabling League Replay API and backing up game.cfg...");
+      const next = await riftcoachApi.enableReplayApi();
+      setReplaySetup(next);
+      setMessage(next.backupPath ? `Replay API enabled. Backup saved to ${next.backupPath}` : next.message);
+    } catch (error) {
+      setMessage(`Replay API setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function syncRankNow() {
+    try {
+      setMessage("Syncing rank from the League Client...");
+      const next = await riftcoachApi.syncRankNow();
+      setRankStatus(next);
+      await refresh();
+      setMessage(next.state === "synced" || next.state === "unranked"
+        ? "Rank synced from the League Client."
+        : rankSyncMessage(next));
+    } catch (error) {
+      setMessage(`Rank sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (!settings || !status || !rankStatus) {
     return (
       <div className="boot">
         <div className="startup-card">
@@ -247,9 +282,9 @@ export function App() {
         {message && <div className="toast">{message}</div>}
 
         {tab === "home" && <Home status={status} settings={settings} reports={reports} journalEntries={journalEntries} visualsBySession={visualsBySession} onGenerate={() => void generateReport()} onOpenJournal={() => setTab("journal")} />}
-        {tab === "live" && <Live status={status} sessions={sessions} settings={settings} onGenerate={generateReport} onImportVod={importVodAndGenerate} onCreateVodReview={createVodReview} />}
+        {tab === "live" && <Live status={status} sessions={sessions} settings={settings} replaySetup={replaySetup} onEnableReplayApi={enableReplayApi} onGenerate={generateReport} onImportVod={importVodAndGenerate} onCreateVodReview={createVodReview} />}
         {tab === "reports" && <Reports reports={reports} sessions={sessions} selected={selectedReport} visualsBySession={visualsBySession} setSelected={setSelectedReportId} onImportVod={importVodAndGenerate} />}
-        {tab === "journal" && <JournalView entries={journalEntries} settings={settings} onUpdateProfile={async (rank, lp) => { await saveSettings({ ...settings, playerRank: rank, playerLp: lp }); }} />}
+        {tab === "journal" && <JournalView entries={journalEntries} settings={settings} rankStatus={rankStatus} onSyncRank={syncRankNow} onUpdateProfile={async (rank, lp) => { await saveSettings({ ...settings, playerRank: rank, playerLp: lp }); }} />}
         {tab === "settings" && <Settings settings={settings} setSettings={updateSettings} save={saveSettings} dirty={settingsDirtyRef.current} />}
       </main>
     </div>
@@ -353,6 +388,8 @@ function Live({
   status,
   sessions,
   settings,
+  replaySetup,
+  onEnableReplayApi,
   onGenerate,
   onImportVod,
   onCreateVodReview
@@ -360,6 +397,8 @@ function Live({
   status: LiveSessionStatus;
   sessions: SessionRecord[];
   settings: AppSettings;
+  replaySetup: ReplaySetupStatus | null;
+  onEnableReplayApi: () => Promise<void>;
   onGenerate: (sessionId?: string) => void;
   onImportVod: (sessionId: string, videoStartOffsetSec: number) => Promise<void>;
   onCreateVodReview: (videoStartOffsetSec: number) => Promise<void>;
@@ -391,6 +430,10 @@ function Live({
               <span>AI model</span>
               <strong>{settings.aiMode === "local-ollama" ? settings.ollamaModel : settings.openAiProxyModel}</strong>
             </div>
+            <div>
+              <span>Match VOD</span>
+              <strong>{vodRecordingLabel(status)}</strong>
+            </div>
           </div>
           <LiveApiExplainer status={status} />
           {status.state === "recording" && <button onClick={() => void riftcoachApi.stopActiveSession()}>Stop and finalize session</button>}
@@ -413,7 +456,7 @@ function Live({
             <Step
               number="3"
               title="Use one drill"
-              description="Turn the report's drill into a mission when the review has real match telemetry."
+              description="Use the report's next-game drill while the Journal tracks recurring patterns over time."
               active={false}
             />
           </div>
@@ -421,17 +464,27 @@ function Live({
       </div>
 
       <Card title="Review from a file" eyebrow="Video or League replay">
+        <div className={`system-banner ${replaySetup?.enabled ? "green" : "blue"}`}>
+          <div>
+            <strong>{replaySetup?.enabled ? "Replay visuals are enabled" : "Offline ROFL review is ready"}</strong>
+            <p>{replaySetup?.message ?? "Checking League replay configuration..."}</p>
+            {replaySetup?.configPath && <code>{replaySetup.configPath}</code>}
+          </div>
+          {replaySetup?.installed && !replaySetup.enabled && (
+            <button className="secondary" onClick={() => void onEnableReplayApi()}>Enable Replay API</button>
+          )}
+        </div>
         <div className="review-options-grid">
           <section className="review-option primary">
             <div>
               <p className="eyebrow">Standalone review</p>
               <h3>Upload video or .rofl replay</h3>
-              <p>Use this when RiftCoach did not record the match. The report will be based on visual bookmarks, replay metadata when available, and optional web enrichment.</p>
+              <p>Use this when RiftCoach did not record the match. ROFL files are parsed offline first, so final stats do not depend on League replay playback.</p>
               <ul className="plain-list">
                 <li>Video files: .mp4, .mkv, .mov, .webm.</li>
-                <li>Replay files: .rofl from the current League patch.</li>
-                <li>ROFL reviews need the replay opened in League so Riot's local Replay API can answer.</li>
-                <li>If Windows blocks automatic launch, open the replay yourself and leave RiftCoach waiting.</li>
+                <li>Replay files: ROFL and ROFL2 metadata, including participants and final stats.</li>
+                <li>Replay API is optional and only adds League frames or a rendered video.</li>
+                <li>Match-v5 can add minute timelines when enabled in Settings.</li>
               </ul>
             </div>
             <div>
@@ -687,6 +740,7 @@ function Settings({
   const [saving, setSaving] = useState(false);
   const [apiToken, setApiToken] = useState("");
   const [webSearchToken, setWebSearchToken] = useState("");
+  const [riotApiKey, setRiotApiKey] = useState("");
 
   const update = <K extends keyof AppSettings,>(key: K, value: AppSettings[K]) => {
     setProviderHealth(null);
@@ -760,6 +814,31 @@ function Settings({
     setProviderHealth({ reachable: Boolean(result.ok), error: result.error } as ProviderHealth);
     const provider = result.provider === "built-in" ? "Built-in web search" : "Ollama web-search";
     setProviderMessage(result.ok ? `${provider} lookup works (${result.resultCount ?? 0} result returned).` : `${provider} lookup failed: ${result.error ?? "unknown error"}`);
+  }
+
+  async function storeRiotApiKey() {
+    if (!riotApiKey.trim()) {
+      setProviderMessage("Paste a Riot API key before saving it.");
+      return;
+    }
+    await riftcoachApi.setRiotApiKey(riotApiKey.trim());
+    setRiotApiKey("");
+    setProviderMessage("Riot API key saved in the local encrypted credential store.");
+  }
+
+  async function deleteRiotApiKey() {
+    await riftcoachApi.deleteRiotApiKey();
+    setRiotApiKey("");
+    setProviderMessage("Riot API key removed.");
+  }
+
+  async function testRiotApi() {
+    setProviderMessage("Testing Riot Account and Match-v5 access...");
+    const result = await riftcoachApi.testRiotApi(settings);
+    setProviderHealth({ reachable: Boolean(result.ok), error: result.error } as ProviderHealth);
+    setProviderMessage(result.ok
+      ? `Riot API works for ${result.riotId}; ${result.matchCount ?? 0} recent matches found.`
+      : `Riot API test failed: ${result.error ?? "unknown error"}`);
   }
 
   return (
@@ -859,12 +938,41 @@ function Settings({
           </div>
         </Card>
 
+        <Card title="Replays and match data" eyebrow="Automatic evidence">
+          <p className="muted">ROFL final stats are parsed offline. Match-v5 enrichment and replay video rendering are optional upgrades.</p>
+          <div className="form-grid">
+            <label>Riot platform<select value={settings.riotPlatform} onChange={(e) => update("riotPlatform", e.target.value as AppSettings["riotPlatform"])}>
+              {(["BR1", "EUN1", "EUW1", "JP1", "KR", "LA1", "LA2", "ME1", "NA1", "OC1", "PH2", "RU", "SG2", "TH2", "TR1", "TW2", "VN2"] as const).map((platform) => <option key={platform} value={platform}>{platform}</option>)}
+            </select></label>
+            <label>Live recording FPS<input type="number" min={10} max={60} value={settings.liveRecordingFps} onChange={(e) => update("liveRecordingFps", Number(e.target.value))} /></label>
+            <label>Riot API key<input type="password" value={riotApiKey} onChange={(e) => setRiotApiKey(e.target.value)} placeholder="Optional developer key for Match-v5" /></label>
+          </div>
+          <div className="checkbox-list">
+            <label className="checkbox"><input type="checkbox" checked={settings.recordLiveMatches} onChange={(e) => update("recordLiveMatches", e.target.checked)} /> Automatically record the League game window as a local VOD</label>
+            <label className="checkbox"><input type="checkbox" checked={settings.riotMatchEnrichment} onChange={(e) => update("riotMatchEnrichment", e.target.checked)} /> Enrich ROFL reviews with Riot Match-v5 timeline data</label>
+            <label className="checkbox"><input type="checkbox" checked={settings.renderRoflVideos} onChange={(e) => update("renderRoflVideos", e.target.checked)} /> Render a WebM from League replays when Replay API is enabled</label>
+          </div>
+          <p className="muted">Game-window recording is off by default, captures no microphone, and never falls back to recording the full desktop.</p>
+          <div className="button-row">
+            <button className="secondary" onClick={() => void storeRiotApiKey()}>Save Riot key</button>
+            <button className="secondary" onClick={() => void testRiotApi()}>Test Match-v5</button>
+            <button className="secondary" onClick={() => void deleteRiotApiKey()}>Remove Riot key</button>
+          </div>
+        </Card>
+
         <Card title="Player profile" eyebrow="Optional context">
-          <p className="muted">Role is detected automatically from the live match data when possible. The fallback role is only used when detection is inconclusive.</p>
+          <p className="muted">Rank is read automatically from the running League Client. Manual values are used only when local sync is disabled or unavailable.</p>
+          <div className="checkbox-list">
+            <label className="checkbox"><input type="checkbox" checked={settings.automaticRankSync} onChange={(e) => update("automaticRankSync", e.target.checked)} /> Automatically sync Rank and LP from League</label>
+          </div>
           <div className="form-grid">
             <label>Riot ID<input value={settings.riotId ?? ""} onChange={(e) => update("riotId", e.target.value)} placeholder="Name#TAG" /></label>
-            <label>Rank<input value={settings.playerRank ?? ""} onChange={(e) => update("playerRank", e.target.value)} placeholder="Silver II" /></label>
-            <label>League points<input type="number" min={0} max={100} value={settings.playerLp ?? ""} onChange={(e) => update("playerLp", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="62" /></label>
+            <label>Ranked queue<select value={settings.rankQueue} onChange={(e) => update("rankQueue", e.target.value as AppSettings["rankQueue"])}>
+              <option value="RANKED_SOLO_5x5">Solo / Duo</option>
+              <option value="RANKED_FLEX_SR">Flex</option>
+            </select></label>
+            <label>Manual fallback rank<input value={settings.playerRank ?? ""} onChange={(e) => update("playerRank", e.target.value)} placeholder="Silver II" /></label>
+            <label>Manual fallback LP<input type="number" min={0} max={100} value={settings.playerLp ?? ""} onChange={(e) => update("playerLp", e.target.value === "" ? undefined : Number(e.target.value))} placeholder="62" /></label>
             <label>Fallback role<select value={settings.mainRole ?? "unknown"} onChange={(e) => update("mainRole", e.target.value as AppSettings["mainRole"])}>
               <option value="unknown">Unknown</option>
               <option value="top">Top</option>
@@ -898,6 +1006,14 @@ function diagnosticTone(health: ProviderHealth | null, message: string): "green"
   if (/failed|not reachable|not installed|error/i.test(message)) return "red";
   if (message) return "green";
   return "blue";
+}
+
+function rankSyncMessage(status: RankSyncStatus): string {
+  if (status.state === "client-not-running") return "Open the League Client to sync rank; the last verified snapshot remains saved.";
+  if (status.state === "disabled") return "Automatic rank sync is disabled. RiftCoach will use the manual fallback.";
+  if (status.state === "syncing") return "Rank sync is already in progress.";
+  if (status.state === "error") return status.lastError ? `Rank sync failed: ${status.lastError}` : "Rank sync failed.";
+  return "Rank synced from the League Client.";
 }
 
 function MetricCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "green" | "blue" | "purple" | "amber" | "red" }) {
@@ -990,6 +1106,19 @@ function sidebarStatusTitle(status: LiveSessionStatus) {
   if (status.state === "error") return "Recorder issue";
   if (status.state === "league-not-running") return "Waiting for match";
   return "Ready";
+}
+
+function vodRecordingLabel(status: LiveSessionStatus): string {
+  const labels: Record<LiveSessionStatus["vodRecording"]["state"], string> = {
+    disabled: "Off",
+    idle: "Ready",
+    starting: "Starting",
+    recording: "Recording",
+    finalizing: "Saving",
+    saved: "Saved",
+    error: "Unavailable"
+  };
+  return labels[status.vodRecording.state];
 }
 
 function heroTitle(status: LiveSessionStatus) {

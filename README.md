@@ -10,7 +10,7 @@ This repository implements a production-oriented source project through the plan
 4. Ollama local structured-output coach provider.
 5. OpenAI cloud coach via a backend proxy, so app-owned API keys are never shipped in the desktop app.
 6. Automatic coaching journal with recurring strength/focus patterns and rank/LP history.
-7. Optional screenshot/VOD review with local screenshot capture, standalone local VOD/ROFL upload, VOD frame extraction, League replay capture, and visual annotation plumbing.
+7. Offline ROFL/ROFL2 metadata review plus optional screenshot/VOD evidence, Match-v5 timelines, League replay capture, and visual annotation plumbing.
 
 The app is designed as a post-game coach first. It intentionally avoids in-game tactical shot-calling, hidden-information inference, automation, packet inspection, or game-memory reading.
 
@@ -54,6 +54,22 @@ pnpm build
 pnpm --filter @riftcoach/desktop dev
 ```
 
+## v0.4.5 Reliable visual bookmarks
+
+League VOD capture now uses DirectX Desktop Duplication cropped to the League window, which avoids the black frames produced by legacy GDI capture on the hardware-accelerated game surface. Blank extracted frames are rejected, older affected reports substitute the nearest healthy periodic match screenshot, and the UI shows one clearly labeled manual bookmark per moment instead of duplicating unverified pixel-scan claims.
+
+## v0.4.4 Evidence-grounded reviews
+
+RiftCoach now distinguishes replay navigation bookmarks and coarse pixel statistics from verified visual understanding. Bookmark-only frames cannot be promoted into claims about wave state, positioning, camera focus, or why a fight happened. Riot kill events that omit the player's `#tag` are matched correctly, timelines use exact telemetry rather than inferred causality, local file paths are removed from evidence, and existing affected reviews are repaired when they load.
+
+## v0.4.2 Journal evidence quality
+
+ROFL final-scoreboard metadata is no longer mislabeled as visual-only data. RiftCoach now prevents parser/import status from becoming coaching praise, limits final-stat-only conclusions to supported KDA/CS/vision/role signals, and explicitly refuses to invent unavailable wave state, pathing, reset, positioning, or event timing. Existing affected Journal entries are repaired when the Journal loads.
+
+## v0.4.3 Automatic ranked journal
+
+Rank and LP now synchronize directly from the running League Client without a Riot developer API key. RiftCoach reads the client's temporary localhost lockfile credentials in memory, captures the active Solo/Duo or Flex rank before a match, and retries after a ranked match so the matching Journal entry records the final rank and LP change. Manual rank remains available as a fallback when automatic sync is disabled or League is closed.
+
 ## v0.4.0 Auto Journal and interface refresh
 
 v0.4.0 replaces Training Objectives with an automatic Journal. Every completed review records the strongest habit, primary focus area, champion, role, and the configured rank/LP at that moment. The Journal aggregates recurring patterns and visualizes ranked progress without changing historical snapshots when the current profile is updated.
@@ -66,7 +82,7 @@ Build the versioned Windows installer with:
 pnpm --filter @riftcoach/desktop dist:win
 ```
 
-The output is `apps/desktop/release/RiftCoach-0.4.0-Setup.exe`.
+The output uses the current package version, for example `apps/desktop/release/RiftCoach-0.4.5-Setup.exe`.
 
 If `pnpm` is not available, install it without Corepack admin shims:
 
@@ -95,9 +111,15 @@ The NSIS installer is written to `apps/desktop/release`.
 
 RiftCoach is designed to stay open in the tray and start recording automatically when a live League match is available. Outside a match, the app shows a normal waiting state.
 
-## VOD review
+## ROFL and VOD review
 
-The Live Recorder tab can upload a local `.mp4`, `.mkv`, `.mov`, `.webm`, or League `.rofl` replay file and generate a VOD-first review without a recorded Live Client session. Video files are sampled with ffmpeg. `.rofl` files are opened with the League replay client, then RiftCoach uses Riot's local Replay API to seek through the replay and capture local desktop frames plus playback/game/render metadata. Riot's Replay API must be enabled in the League client config for `.rofl` reviews. When a matching recorded session exists, the video upload flow can attach the VOD to telemetry so frame bookmarks line up with deaths, fights, objectives, and lane checkpoints. Extracted frames, replay screenshots, and local visual observations stay on disk under the app data directory.
+The Live Recorder tab accepts `.mp4`, `.mkv`, `.mov`, `.webm`, and League `.rofl` files. Video files are sampled with ffmpeg. ROFL and ROFL2 files are parsed offline first, yielding participant identity, champion/role, final scoreboard, items, duration, patch, and match ID without launching League. Set Player Profile → Riot ID to `Name#TAG` so RiftCoach can identify the correct participant.
+
+Riot's local Replay API is optional and only adds replay frames or an opt-in rendered WebM. The Live Recorder tab includes a one-click setup that locates `game.cfg`, creates a timestamped backup, writes `EnableReplayApi=1` under `[General]`, and verifies the setting. Restart an already-open replay after enabling it.
+
+Optional Match-v5 enrichment can add minute frames and event timing. Save a Riot API key locally in Settings, choose the platform, and enable enrichment. The key is stored through Electron's encrypted credential store. Development keys expire and are not appropriate for public distribution; production access must follow Riot's developer policies.
+
+RiftCoach can also opt in to automatic VOD capture during live matches. It records only the League game window, captures no microphone, and never falls back to the full desktop. The saved local VOD is attached to telemetry before the automatic report is generated.
 
 ## AI and knowledge modes
 
@@ -130,7 +152,7 @@ The desktop app stores raw local snapshots and screenshots locally, runs rules l
 
 ## Safety and product constraints
 
-RiftCoach is designed for post-game coaching and gentle user-selected learning-goal reminders. It does not:
+RiftCoach is designed for post-game coaching, automatic journaling, and user-controlled local evidence capture. It does not:
 
 - automate player inputs;
 - read process memory;

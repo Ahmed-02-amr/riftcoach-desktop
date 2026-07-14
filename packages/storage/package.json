@@ -1,6 +1,6 @@
 {
   "name": "@riftcoach/storage",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "type": "module",
   "main": "dist/index.cjs",
   "types": "dist/index.d.ts",

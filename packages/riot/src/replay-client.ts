@@ -1,7 +1,7 @@
 import https from "node:https";
 import { URL } from "node:url";
 import { LiveClientHttpError, LiveClientUnavailableError } from "./errors";
-import type { RiotReplayGame, RiotReplayHealth, RiotReplayPlayback, RiotReplayRender, RiotLiveClientOptions } from "./types";
+import type { RiotReplayGame, RiotReplayHealth, RiotReplayPlayback, RiotReplayRecording, RiotReplayRender, RiotLiveClientOptions } from "./types";
 
 const DEFAULT_BASE_URL = "https://127.0.0.1:2999";
 
@@ -34,6 +34,14 @@ export class ReplayClient {
     return this.requestJson<RiotReplayRender>("/replay/render", "POST", input);
   }
 
+  async readRecording(): Promise<RiotReplayRecording> {
+    return this.requestJson<RiotReplayRecording>("/replay/recording");
+  }
+
+  async updateRecording(input: Partial<RiotReplayRecording>): Promise<RiotReplayRecording> {
+    return this.requestJson<RiotReplayRecording>("/replay/recording", "POST", input);
+  }
+
   async seek(timestampSec: number, pause = true): Promise<RiotReplayPlayback> {
     return this.updatePlayback({ time: Math.max(0, timestampSec), paused: pause });
   }
@@ -60,7 +68,7 @@ export class ReplayClient {
           rejectUnauthorized: false,
           headers: {
             Accept: "application/json",
-            "User-Agent": "RiftCoachDesktop/0.3",
+            "User-Agent": "RiftCoachDesktop/0.4.5",
             ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {})
           }
         },

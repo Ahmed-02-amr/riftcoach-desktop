@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { riftcoachApi } from "../api";
 import type { CoachReport, KnowledgeContext, ScreenshotFrame, VisualObservation } from "../types";
 import { formatDuration, formatDate } from "../utils";
+import { buildVisualCards } from "../visual-cards";
 
 export function ReportView({
   report,
@@ -14,6 +15,7 @@ export function ReportView({
 }) {
   const casualMode = report.reviewType === "casual_mode";
   const providerText = `${providerLabel(report.provider)}${report.model ? ` - ${report.model}` : ""}`;
+  const visualCards = buildVisualCards(frames, observations);
 
   return (
     <article className="report-view">
@@ -66,7 +68,7 @@ export function ReportView({
             <section className="timeline card-subsection">
               <div className="section-title-row">
                 <div>
-                  <p className="eyebrow">Replay bookmarks</p>
+                  <p className="eyebrow">Match timeline</p>
                   <h3>Timeline notes</h3>
                 </div>
               </div>
@@ -79,28 +81,30 @@ export function ReportView({
             </section>
           )}
 
-          {observations.length > 0 && (
+          {visualCards.length > 0 && (
             <section className="card-subsection visual-evidence">
               <div className="section-title-row">
                 <div>
-                  <p className="eyebrow">Visual evidence</p>
-                  <h3>Visual review frames</h3>
+                  <p className="eyebrow">Manual visual bookmarks</p>
+                  <h3>Captured match frames</h3>
                 </div>
               </div>
+              <p className="muted visual-evidence-note">
+                These frames are saved for your manual review. RiftCoach only presents a visual claim as evidence when it has been explicitly verified.
+              </p>
               <div className="visual-grid">
-                {observations.slice(0, 12).map((observation) => {
-                  const frame = frames.find((candidate) => candidate.id === observation.frameId);
-                  return (
-                    <div className="visual-card" key={observation.id}>
-                      {frame ? <FrameThumbnail frame={frame} /> : <div className="frame-placeholder">No frame</div>}
-                      <div>
-                        <span>{formatDuration(observation.timestampSec)} - {categoryLabel(observation.category)}</span>
-                        <strong>{observation.title}</strong>
-                        <p>{observation.details}</p>
-                      </div>
+                {visualCards.map((card) => (
+                  <div className="visual-card" key={card.frame.id}>
+                    <FrameThumbnail frame={card.frame} />
+                    <div>
+                      <span>
+                        {formatDuration(card.timestampSec)} - {categoryLabel(card.category)} - {card.verified ? "verified" : "bookmark"}
+                      </span>
+                      <strong>{card.title}</strong>
+                      <p>{card.details}</p>
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </section>
           )}

@@ -4,6 +4,36 @@ export interface LiveSessionStatus {
   gameTimeSec?: number;
   snapshotsRecorded: number;
   lastError?: string;
+  vodRecording: {
+    state: "disabled" | "idle" | "starting" | "recording" | "finalizing" | "saved" | "error";
+    sessionId?: string;
+    filePath?: string;
+    startedAtGameTimeSec?: number;
+    error?: string;
+  };
+  updatedAtIso: string;
+}
+
+export type RankedQueueType = "RANKED_SOLO_5x5" | "RANKED_FLEX_SR";
+
+export interface RankedSnapshot {
+  queueType: RankedQueueType;
+  rank: string;
+  tier: string;
+  division?: string;
+  lp: number;
+  wins?: number;
+  losses?: number;
+  provisional?: boolean;
+  source: "league-client" | "league-client-cache" | "manual";
+  syncedAtIso: string;
+  matchQueueId?: number;
+}
+
+export interface RankSyncStatus {
+  state: "syncing" | "synced" | "client-not-running" | "unranked" | "disabled" | "error";
+  snapshot?: RankedSnapshot;
+  lastError?: string;
   updatedAtIso: string;
 }
 
@@ -20,6 +50,11 @@ export interface AppSettings {
   pollIntervalMs: number;
   captureScreenshots: boolean;
   screenshotIntervalSec: number;
+  recordLiveMatches: boolean;
+  liveRecordingFps: number;
+  renderRoflVideos: boolean;
+  riotMatchEnrichment: boolean;
+  riotPlatform: "BR1" | "EUN1" | "EUW1" | "JP1" | "KR" | "LA1" | "LA2" | "ME1" | "NA1" | "OC1" | "PH2" | "RU" | "SG2" | "TH2" | "TR1" | "TW2" | "VN2";
   startOnLogin: boolean;
   minimizeToTray: boolean;
   notificationsEnabled: boolean;
@@ -31,8 +66,21 @@ export interface AppSettings {
   webSearchTimeoutMs: number;
   playerRank?: string;
   playerLp?: number;
+  automaticRankSync: boolean;
+  rankQueue: RankedQueueType;
   mainRole?: "top" | "jungle" | "mid" | "adc" | "support" | "unknown";
   riotId?: string;
+}
+
+export interface ReplaySetupStatus {
+  installed: boolean;
+  installPath?: string;
+  executablePath?: string;
+  configPath?: string;
+  enabled: boolean;
+  apiReachable: boolean;
+  backupPath?: string;
+  message: string;
 }
 
 export interface SessionRecord {
@@ -153,6 +201,12 @@ export interface JournalEntry {
   weaknessDetail: string;
   rank?: string;
   lp?: number;
+  rankBefore?: string;
+  lpBefore?: number;
+  lpDelta?: number;
+  rankQueue?: RankedQueueType;
+  rankSource?: "league-client" | "league-client-cache" | "manual";
+  rankSyncedAtIso?: string;
 }
 
 export interface ProviderHealth {
@@ -184,6 +238,7 @@ export interface VisualObservation {
   title: string;
   details: string;
   evidence: string[];
+  evidenceKind?: "bookmark" | "pixel-scan" | "verified" | "telemetry";
 }
 
 export interface VodImportResult {

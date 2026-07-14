@@ -132,7 +132,8 @@ function input() {
           confidence: 0.66,
           title: "Visual bookmark near death",
           details: "Screenshot near death.",
-          evidence: ["Frame: death.png"]
+          evidence: ["Frame: death.png"],
+          evidenceKind: "verified"
         }
       ]
     },
@@ -194,6 +195,73 @@ describe("coach prompt telemetry", () => {
     expect(packet.instruction.qualityBar.join("\n")).toContain("concrete next-game behavior");
     expect(packet.instruction.forbiddenPatterns).toContain("benchmark-only diagnosis");
     expect(packet.telemetry.evidence.some((entry: string) => entry.startsWith("Role evidence:"))).toBe(true);
+  });
+
+  it("does not expose bookmark-only frames as semantic visual evidence", () => {
+    const bookmarkOnlyInput = input();
+    bookmarkOnlyInput.match.visualObservations = [{
+      id: "bookmark-1",
+      sessionId: "session-1",
+      timestampSec: 390,
+      category: "death_context",
+      confidence: 0.82,
+      title: "Fight before death VOD frame",
+      details: "Frame extracted before a death.",
+      evidence: ["VOD frame: C:\\Users\\player\\death.jpg"],
+      evidenceKind: "bookmark"
+    }];
+
+    const packet = buildCoachPacket(bookmarkOnlyInput) as any;
+    const messages = buildPostGameCoachMessages(bookmarkOnlyInput);
+
+    expect(packet.telemetry.visualBookmarks).toEqual([]);
+    expect(JSON.stringify(packet)).not.toContain("C:\\\\Users");
+    expect(messages[0]!.content).toContain("Timestamp bookmarks and local pixel scans are navigation aids, not image understanding");
+  });
+
+  it("treats offline ROFL final metadata as scoreboard data without fabricating a timeline", () => {
+    const roflInput = input();
+    const finalSnapshot = roflInput.match.snapshots.at(-1)!;
+    const roflGame = { gameMode: "ROFL_REPLAY", mapName: "Summoner's Rift", reviewMode: "coaching" };
+    const roflPlayer = { ...roflInput.match.player, championName: "MasterYi", role: "jungle", roleSource: "ROFL2 metadata" };
+    roflInput.match = {
+      ...roflInput.match,
+      game: roflGame,
+      player: roflPlayer,
+      snapshots: [{
+        ...finalSnapshot,
+        timestampSec: 1320,
+        game: roflGame,
+        player: roflPlayer,
+        scores: { kills: 2, deaths: 8, assists: 0, creepScore: 114, wardScore: 19 }
+      }],
+      events: [],
+      visualObservations: [],
+      aggregate: {
+        ...roflInput.match.aggregate,
+        durationSec: 1320,
+        kills: 2,
+        deaths: 8,
+        assists: 0,
+        csAt10: undefined,
+        csAt15: undefined,
+        csPerMin: 5.18,
+        visionScore: 19,
+        deathTimestamps: [],
+        totalSnapshots: 1
+      }
+    };
+
+    const packet = buildCoachPacket(roflInput) as any;
+
+    expect(packet.matchSummary.evidenceMode).toBe("rofl_final_stats_only");
+    expect(packet.matchSummary.timelineAvailable).toBe(false);
+    expect(packet.telemetry.capture.source).toMatch(/Offline ROFL final-scoreboard metadata/i);
+    expect(packet.telemetry.keySnapshots).toEqual([]);
+    expect(packet.telemetry.playerCombatTimeline).toEqual([]);
+    expect(packet.telemetry.evidence.join("\n")).toContain("one final scoreboard and no minute-by-minute timeline");
+    expect(packet.telemetry.evidence.join("\n")).not.toMatch(/Visual-only|at 5:00|at 10:00/i);
+    expect(packet.instruction.qualityBar.join("\n")).toContain("Never use parser success");
   });
 
   it("supports toxic roast tone with safety guardrails", () => {

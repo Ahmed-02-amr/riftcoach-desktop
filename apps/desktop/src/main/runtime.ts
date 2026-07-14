@@ -7,8 +7,11 @@ import { LocalDb, MaintenanceRepository, SettingsRepository } from "@riftcoach/s
 import { registerIpcHandlers } from "./ipc";
 import { createTray } from "./tray";
 import { CredentialStore } from "./services/credential-store";
+import { GameRecordingService } from "./services/game-recording-service";
+import { LeagueReplayService } from "./services/league-replay-service";
 import { LiveSessionService } from "./services/live-session-service";
 import { ReportCoordinator } from "./services/report-coordinator";
+import { RankSyncService } from "./services/rank-sync-service";
 import { ReviewChatService } from "./services/review-chat-service";
 import { ScreenshotService } from "./services/screenshot-service";
 import { VisualReviewService } from "./services/visual-review-service";
@@ -34,6 +37,8 @@ export function createRiftCoachApp(): RiftCoachRuntime {
   let mainWindow: BrowserWindow | null = null;
   let db: LocalDb | null = null;
   let liveSessionService: LiveSessionService | null = null;
+  let gameRecordingService: GameRecordingService | null = null;
+  let rankSyncService: RankSyncService | null = null;
   let unsubscribeIpc: (() => void) | null = null;
   let isQuitting = false;
 
@@ -134,12 +139,17 @@ export function createRiftCoachApp(): RiftCoachRuntime {
     const screenshotService = new ScreenshotService({ userDataPath: userData });
     const visualReviewService = new VisualReviewService({ db: db.db, userDataPath: userData });
     const credentialStore = new CredentialStore();
+    const leagueReplayService = new LeagueReplayService();
+    rankSyncService = new RankSyncService({ db: db.db, settingsRepo });
+    gameRecordingService = new GameRecordingService(userData);
     const reportCoordinator = new ReportCoordinator({
       db: db.db,
       settingsRepo,
       credentialStore,
       screenshotService,
       visualReviewService,
+      leagueReplayService,
+      userDataPath: userData,
       notify: (title, body) => {
         if (!settingsRepo.getAppSettings(DEFAULT_SETTINGS).notificationsEnabled) return;
         if (Notification.isSupported()) new Notification({ title, body }).show();
@@ -155,11 +165,16 @@ export function createRiftCoachApp(): RiftCoachRuntime {
       db: db.db,
       settingsRepo,
       screenshotService,
-      reportCoordinator
+      reportCoordinator,
+      gameRecordingService,
+      rankSyncService
     });
 
     liveSessionService.on("status", (status) => {
       mainWindow?.webContents.send("status:update", status);
+    });
+    rankSyncService.on("status", (status) => {
+      mainWindow?.webContents.send("rank:update", status);
     });
 
     mainWindow = await createWindow(settings);
@@ -182,21 +197,30 @@ export function createRiftCoachApp(): RiftCoachRuntime {
       reviewChatService,
       screenshotService,
       visualReviewService,
+      leagueReplayService,
+      rankSyncService,
       deleteAllLocalFiles: () => {
         new MaintenanceRepository(db!.db).deleteAllLocalData();
         const screenshots = join(userData, "screenshots");
         const vodFrames = join(userData, "vod-frames");
+        const matchVods = join(userData, "match-vods");
+        const roflRecordings = join(userData, "rofl-recordings");
         if (existsSync(screenshots)) rmSync(screenshots, { recursive: true, force: true });
         if (existsSync(vodFrames)) rmSync(vodFrames, { recursive: true, force: true });
+        if (existsSync(matchVods)) rmSync(matchVods, { recursive: true, force: true });
+        if (existsSync(roflRecordings)) rmSync(roflRecordings, { recursive: true, force: true });
       }
     });
 
+    rankSyncService.start();
     liveSessionService.start();
   }
 
   async function stop(): Promise<void> {
     unsubscribeIpc?.();
     liveSessionService?.stop();
+    rankSyncService?.stop();
+    gameRecordingService?.dispose();
     db?.close();
   }
 

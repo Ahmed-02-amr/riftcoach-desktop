@@ -122,4 +122,24 @@ describe("live data normalization", () => {
     expect(rawTelemetry?.omittedSnapshots).toBe(0);
     expect(rawTelemetry?.snapshots[0]?.allGameData).toMatchObject({ gameData: { gameMode: "CLASSIC" } });
   });
+
+  it("matches Riot kill events that omit the Riot ID tag", () => {
+    const snapshot = normalizeLiveData("s1", liveData());
+    const match = createMatchContextFromSnapshots({
+      sessionId: "s1",
+      startedAtIso: new Date().toISOString(),
+      snapshots: [snapshot],
+      events: [{
+        id: 2,
+        type: "champion_kill",
+        timestampSec: 226,
+        actorName: "EnemyTop",
+        victimName: "Player",
+        rawEventName: "ChampionKill"
+      }]
+    });
+
+    expect(match.aggregate.deathTimestamps).toEqual([226]);
+    expect(match.aggregate.deathsBefore10).toBe(1);
+  });
 });

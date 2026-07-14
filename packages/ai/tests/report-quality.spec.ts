@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CoachReport, CoachReportInput } from "@riftcoach/core";
-import { enforceActionableCoachReport } from "../src/report-quality.ts";
+import { enforceActionableCoachReport, enforceEvidenceBackedCoachReport } from "../src/report-quality.ts";
 
 function input(): CoachReportInput {
   return {
@@ -121,12 +121,12 @@ describe("report actionability enforcement", () => {
     const repaired = enforceActionableCoachReport(benchmarkSlopReport(), input());
 
     expect(repaired.summary).not.toMatch(/performance was hindered|relative to benchmarks|gold disadvantage|decent vision|not a benchmark grade|decision pattern behind/i);
-    expect(repaired.mainMistake.title).toBe("Stop taking the first doomed lane fight");
+    expect(repaired.mainMistake.title).toBe("Protect the first 10 minutes");
     expect(repaired.mainMistake.explanation).toMatch(/multiple deaths before 10 minutes/i);
     expect(repaired.mainMistake.evidence).toContain("Death at 4:10");
     expect(repaired.mainMistake.evidence.join("\n")).not.toContain("Target estimate");
     expect(repaired.nextGameDrill.steps.length).toBeGreaterThanOrEqual(3);
-    expect(repaired.nextGameDrill.successMetric).toMatch(/zero avoidable deaths before 10:00/i);
+    expect(repaired.nextGameDrill.successMetric).toMatch(/zero deaths before 10:00/i);
   });
 
   it("turns a CS-only report into natural wave-discipline coaching", () => {
@@ -142,5 +142,162 @@ describe("report actionability enforcement", () => {
     expect(repaired.mainMistake.title).toBe("Catch the safe wave before chasing the play");
     expect(repaired.mainMistake.explanation).toContain("Low CS usually comes from repeated wave choices");
     expect(repaired.nextGameDrill.steps).toContain("Before leaving lane, check whether a wave is about to reach your tower.");
+  });
+
+  it("replaces parser praise and unsupported timeline claims in final-stats-only ROFL reviews", () => {
+    const base = input();
+    const player = {
+      ...base.match.player,
+      championName: "MasterYi",
+      livePosition: "JUNGLE",
+      role: "jungle" as const,
+      roleSource: "ROFL2 metadata"
+    };
+    const roflInput: CoachReportInput = {
+      ...base,
+      insights: [],
+      match: {
+        ...base.match,
+        game: { gameMode: "ROFL_REPLAY", mapName: "Summoner's Rift", reviewMode: "coaching" },
+        player,
+        snapshots: [{
+          sessionId: base.match.sessionId,
+          timestampSec: 1320.542,
+          phase: "mid",
+          game: { gameMode: "ROFL_REPLAY", mapName: "Summoner's Rift", reviewMode: "coaching" },
+          player,
+          scores: { kills: 2, deaths: 8, assists: 0, creepScore: 114, wardScore: 19 },
+          items: [],
+          allPlayers: [
+            { ...player, team: "ORDER", scores: { kills: 2, deaths: 8, assists: 0, creepScore: 114, wardScore: 19 }, items: [] },
+            { championName: "Zed", role: "mid", team: "ORDER", scores: { kills: 5, deaths: 5, assists: 3, creepScore: 111 }, items: [] }
+          ]
+        }],
+        events: [],
+        aggregate: {
+          durationSec: 1320.542,
+          kills: 2,
+          deaths: 8,
+          assists: 0,
+          teamKills: 16,
+          csPerMin: 5.18,
+          visionScore: 19,
+          deathsBefore10: 0,
+          deathTimestamps: [],
+          itemNamesFinal: [],
+          totalSnapshots: 1
+        }
+      }
+    };
+    const malformed: CoachReport = {
+      ...benchmarkSlopReport(),
+      positiveHabit: {
+        title: "Final stats parsed cleanly from ROFL metadata",
+        explanation: "The telemetry envelope parsed all participants and role identification was reliable."
+      },
+      mainMistake: {
+        title: "Commit to team fights without wave state or reset",
+        explanation: "You arrived late because the wave was not pushed.",
+        evidence: ["Kill participation: 13%"],
+        whyItMatters: "The team lost position."
+      },
+      warnings: ["This review is based on visual-only ROFL replay data."],
+      timelineNotes: [{ timestampSec: 600, title: "Vision timing", note: "At 10 minutes vision was trailing." }]
+    };
+
+    const repaired = enforceEvidenceBackedCoachReport(malformed, roflInput);
+
+    expect(repaired.positiveHabit.title).toBe("Maintained jungle farm pace");
+    expect(repaired.positiveHabit.explanation).toContain("Master Yi");
+    expect(repaired.positiveHabit.explanation).not.toMatch(/parsed|metadata|telemetry envelope/i);
+    expect(repaired.mainMistake.title).toBe("Reduce repeat deaths");
+    expect(repaired.mainMistake.explanation).not.toMatch(/wave|arrived late|reset window/i);
+    expect(repaired.timelineNotes).toEqual([]);
+    expect(repaired.warnings.join("\n")).toMatch(/final-scoreboard metadata only/i);
+    expect(repaired.warnings.join("\n")).not.toMatch(/visual-only/i);
+  });
+
+  it("repairs bookmark-driven coaching into telemetry-only claims and removes local paths", () => {
+    const bookmarkInput = input();
+    bookmarkInput.match.visualObservations = [{
+      id: "bookmark-1",
+      sessionId: bookmarkInput.match.sessionId,
+      frameId: "frame-1",
+      timestampSec: 221,
+      category: "death_context",
+      confidence: 0.82,
+      title: "Fight before death VOD frame",
+      details: "Frame extracted just before a player-involved fight. Review wave state and spacing.",
+      evidence: ["VOD frame: C:\\Users\\player\\AppData\\frame.jpg", "Game time: 3:41"],
+      evidenceKind: "bookmark"
+    }];
+    const deteriorated: CoachReport = {
+      ...benchmarkSlopReport(),
+      summary: "Turn the replay bookmark into an in-game trigger.",
+      mainMistake: {
+        title: "Replay the bookmark as a decision check",
+        explanation: "The VOD frame proves the wave collapsed because your spacing was wrong.",
+        evidence: ["VOD frame: C:\\Users\\player\\AppData\\frame.jpg", "Game time: 3:41"],
+        whyItMatters: "The screenshot shows what went wrong."
+      },
+      positiveHabit: {
+        title: "Sustain through mid game with tank items",
+        explanation: "The build allowed you to survive fights and caused more assists."
+      },
+      timelineNotes: [{
+        timestampSec: 600,
+        title: "Recovered after the death",
+        note: "The snapshot proves the tank build paid off and you survived longer."
+      }],
+      nextGameDrill: {
+        title: "Replay the bookmark as a decision check",
+        steps: ["Review the screenshot."],
+        successMetric: "Choose better next time.",
+        duration: "next_game"
+      }
+    };
+
+    const repaired = enforceEvidenceBackedCoachReport(deteriorated, bookmarkInput);
+
+    expect(repaired.mainMistake.title).toBe("Protect the first 10 minutes");
+    expect(repaired.mainMistake.explanation).toContain("Telemetry records the death timing, not its cause");
+    expect(repaired.mainMistake.evidence.join("\n")).not.toMatch(/C:\\Users|VOD frame/i);
+    expect(repaired.summary).not.toMatch(/bookmark|screenshot/i);
+    expect(repaired.positiveHabit.explanation).not.toMatch(/allowed you|caused more assists|survive fights/i);
+    expect(repaired.timelineNotes.length).toBeGreaterThan(0);
+    expect(repaired.timelineNotes.map((note) => note.note).join("\n")).not.toMatch(/recovered|paid off|survived longer/i);
+    expect(repaired.timelineNotes[0]!.note).toContain("does not establish");
+  });
+
+  it("falls back to scoreboard evidence when bookmarks are removed and no rule insight remains", () => {
+    const bookmarkInput = input();
+    bookmarkInput.insights = [];
+    bookmarkInput.match.visualObservations = [{
+      id: "bookmark-1",
+      sessionId: bookmarkInput.match.sessionId,
+      timestampSec: 600,
+      category: "wave",
+      confidence: 0.7,
+      title: "Laning checkpoint VOD frame",
+      details: "Frame extracted as a review checkpoint.",
+      evidence: ["VOD frame: C:\\Users\\player\\checkpoint.jpg"],
+      evidenceKind: "bookmark"
+    }];
+    const deteriorated: CoachReport = {
+      ...benchmarkSlopReport(),
+      summary: "The replay bookmark shows a bad wave state.",
+      mainMistake: {
+        title: "Replay the bookmark as a decision check",
+        explanation: "The screenshot proves the wave collapsed.",
+        evidence: ["VOD frame: C:\\Users\\player\\checkpoint.jpg"],
+        whyItMatters: "The frame shows the mistake."
+      }
+    };
+
+    const repaired = enforceEvidenceBackedCoachReport(deteriorated, bookmarkInput);
+
+    expect(repaired.summary).toContain("no timestamped decision error cleared the evidence threshold");
+    expect(JSON.stringify(repaired)).not.toMatch(/C:\\\\Users|replay the bookmark|screenshot proves/i);
+    expect(repaired.mainMistake.evidence.join("\n")).toContain("Final scoreboard");
   });
 });

@@ -22,6 +22,27 @@ export function runMigrations(db: Database.Database): void {
       report_status TEXT NOT NULL DEFAULT 'pending'
     );
 
+    CREATE TABLE IF NOT EXISTS rank_snapshots (
+      scope_key TEXT PRIMARY KEY,
+      session_id TEXT,
+      phase TEXT NOT NULL,
+      queue_type TEXT NOT NULL,
+      rank TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      division TEXT,
+      lp INTEGER NOT NULL,
+      wins INTEGER,
+      losses INTEGER,
+      provisional INTEGER,
+      source TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      match_queue_id INTEGER,
+      FOREIGN KEY(session_id) REFERENCES local_sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rank_snapshots_session_phase
+      ON rank_snapshots(session_id, phase);
+
     CREATE TABLE IF NOT EXISTS live_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
@@ -144,6 +165,7 @@ export function runMigrations(db: Database.Database): void {
       title TEXT NOT NULL,
       details TEXT NOT NULL,
       evidence_json TEXT NOT NULL,
+      evidence_kind TEXT NOT NULL DEFAULT 'verified',
       FOREIGN KEY(session_id) REFERENCES local_sessions(id) ON DELETE CASCADE,
       FOREIGN KEY(frame_id) REFERENCES screenshot_frames(id) ON DELETE SET NULL
     );
@@ -174,5 +196,28 @@ export function runMigrations(db: Database.Database): void {
       error TEXT,
       created_at TEXT NOT NULL
     );
+  `);
+
+  const visualColumns = db.prepare("PRAGMA table_info(visual_observations)").all() as Array<{ name: string }>;
+  if (!visualColumns.some((column) => column.name === "evidence_kind")) {
+    db.exec("ALTER TABLE visual_observations ADD COLUMN evidence_kind TEXT NOT NULL DEFAULT 'verified'");
+  }
+
+  // Older releases stored timestamp bookmarks and coarse pixel statistics as if
+  // they were semantic visual observations. Reclassify them during migration so
+  // saved reports cannot use those records to claim wave state or positioning.
+  db.exec(`
+    UPDATE visual_observations
+    SET evidence_kind = CASE
+      WHEN lower(title) LIKE '%telemetry parsed%' OR lower(title) LIKE '%metadata parsed%' THEN 'telemetry'
+      WHEN lower(title) LIKE 'local % scan' OR lower(title) = 'minimap visibility check' OR lower(details) LIKE '%not object detection%' THEN 'pixel-scan'
+      WHEN lower(title) LIKE '%bookmark%'
+        OR lower(title) LIKE '%vod frame%'
+        OR lower(title) LIKE '%replay frame%'
+        OR lower(title) LIKE '%checkpoint%'
+        OR lower(details) LIKE '%frame extracted%'
+        OR lower(details) LIKE '%frame captured%' THEN 'bookmark'
+      ELSE evidence_kind
+    END
   `);
 }

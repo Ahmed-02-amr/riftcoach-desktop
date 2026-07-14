@@ -385,10 +385,7 @@ export function createMatchContextFromSnapshots(params: {
 
   const deathEvents = params.events.filter((event) => {
     if (event.type !== "champion_kill") return false;
-    const victim = event.victimName?.toLowerCase();
-    const summoner = player.summonerName?.toLowerCase();
-    const riot = player.riotId?.toLowerCase();
-    return Boolean(victim && (victim === summoner || victim === riot));
+    return rawEventNameMatchesPlayer(event.victimName, player);
   });
 
   const aggregate: MatchAggregate = {

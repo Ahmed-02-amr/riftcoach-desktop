@@ -1,4 +1,5 @@
 export * from "./provider";
+export * from "./evidence-mode";
 export * from "./prompt-builder";
 export * from "./review-chat-builder";
 export * from "./report-quality";

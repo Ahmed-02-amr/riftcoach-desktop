@@ -1,0 +1,16 @@
+RiftCoach Desktop Source v0.4.0
+
+Core fixes in this release:
+- Replaced Training Objectives with an automatic post-game Journal.
+- Added per-review strength, focus-area, rank, and LP snapshots with ranked progress visualization.
+- Backfills existing reports into journal history while preserving legacy tables for upgrade safety.
+- Added a cohesive Hextech-inspired desktop visual system with SVG icons and responsive window layouts.
+- Kept provider-backed reviews, local-first persistence, VOD/ROFL review support, and the packaged-renderer safeguards from earlier releases.
+
+Main areas:
+- apps/desktop: Electron + React desktop application.
+- apps/api: optional OpenAI proxy backend.
+- packages/core: normalized game state, role inference, rules engine, knowledge context, schemas, journal/profile types, visual observations.
+- packages/riot: local Riot Live Client Data reader.
+- packages/storage: SQLite persistence.
+- packages/ai: Ollama/OpenAI provider abstraction.

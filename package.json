@@ -1,0 +1,36 @@
+{
+  "name": "riftcoach-desktop-monorepo",
+  "private": true,
+  "version": "0.4.0",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "pnpm --filter @riftcoach/desktop dev",
+    "dev:renderer": "pnpm --filter @riftcoach/desktop dev:renderer",
+    "dev:api": "pnpm --filter @riftcoach/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "tsc --noEmit",
+    "clean": "pnpm -r exec rimraf dist dist-electron release coverage",
+    "doctor": "powershell -ExecutionPolicy Bypass -File scripts/check-env.ps1",
+    "preinstall": "node scripts/check-node-version.mjs",
+    "verify:electron-bundle": "node scripts/verify-electron-bundle.mjs",
+    "verify:renderer-assets": "node scripts/verify-renderer-assets.mjs",
+    "verify:desktop": "pnpm verify:electron-bundle && pnpm verify:renderer-assets"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=24.14 <25",
+    "pnpm": ">=9 <10"
+  },
+  "author": "RiftCoach"
+}
